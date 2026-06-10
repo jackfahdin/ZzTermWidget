@@ -13,11 +13,34 @@
 - 增加开放了一些已有的内部API接口对外，方便外部配置设置使用。
 - 修复了一些可能的问题，以及在windows上的一些小问题。
 - 从原项目中拣选了部分未完成的PR，进行了一些修改和整合。
-- 去除全部的构建依赖，增加qmake构建支持，通过 include(./lib/qtermwidget.pri) 引入即可，极为方便通过源码引入其他项目。
+- 去除全部的构建依赖，使用 CMake 构建，通过 `add_subdirectory(lib)` 引入即可，极为方便通过源码引入其他项目。
+
+## 构建
+
+依赖 Qt6（Core/Gui/Widgets/Network/Xml/Multimedia 模块）。
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+```
+
+构建完成后会得到静态库 `qtermwidget`（CMake 目标别名 `ZzQTermWidget::qtermwidget`）以及示例程序 `qtermwidget_example`。
+
+常用选项：
+
+- `-DZZQTERMWIDGET_BUILD_EXAMPLE=OFF` 关闭示例程序的构建。
+- `-DZZQTERMWIDGET_INSTALL=OFF` 关闭安装规则的生成。
+
+作为子项目引入时，只需在你的 `CMakeLists.txt` 中：
+
+```cmake
+add_subdirectory(path/to/ZzQTermWidget/lib)
+target_link_libraries(your_target PRIVATE ZzQTermWidget::qtermwidget)
+```
 
 一些注意：
 
-- 原始项目使用cmake构建，但由于个人需要，我使用了qmake构建，因此在lib目录增加了qtermwidget.pri文件，可以直接使用qmake构建，原本的cmake构建未做修补无法使用因此删除。
+- 原始项目使用 CMake 构建，本项目同样使用 CMake 构建（顶层 `CMakeLists.txt`、`lib/CMakeLists.txt`、`lib/ptyqt/CMakeLists.txt`）。
 - 在Qt6.6.1上测试通过。
 - 本项目完全遵守原始项目的LICENSE，修改新增的代码也遵守原始项目的LICENSE。
 

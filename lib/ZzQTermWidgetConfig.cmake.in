@@ -1,0 +1,14 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Resolve the same Qt the library was built against (Qt6 now, Qt7 in the future).
+find_dependency(QT NAMES Qt6 Qt7 COMPONENTS Core Gui Widgets Network Xml Multimedia)
+find_dependency(Qt${QT_VERSION_MAJOR} COMPONENTS Core Gui Widgets Network Xml Multimedia)
+
+# The qtermwidget target links ZzPtyQt::ptyqt.
+find_dependency(ZzPtyQt)
+
+include("${CMAKE_CURRENT_LIST_DIR}/ZzQTermWidgetTargets.cmake")
+
+check_required_components(ZzQTermWidget)

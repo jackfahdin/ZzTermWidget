@@ -17,13 +17,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Qt
-        uses: jurplel/install-qt-action@v3
+        uses: jurplel/install-qt-action@v4
         with:
           version: '6.5.3'
           modules: 'qtmultimedia'
           aqtversion: ==3.1.7
 
-      - name: Build all
-        run: |
-          qmake -makefile
-          make
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel

@@ -2,19 +2,8 @@
 #include <utility>
 
 #ifdef Q_OS_WIN
-#if defined(Q_CC_GNU)
 
-#include "winptyprocess.h"
-
-IPtyProcess *PtyQt::createPtyProcess(IPtyProcess::PtyType ptyType) {
-    Q_UNUSED(ptyType);
-    return new WinPtyProcess();
-}
-
-#endif
-
-#if defined(Q_CC_MSVC)
-
+// Windows uses the native ConPty backend (Windows 10 1903+) for both MSVC and MinGW.
 #include "conptyprocess.h"
 
 IPtyProcess *PtyQt::createPtyProcess(IPtyProcess::PtyType ptyType) {
@@ -22,7 +11,6 @@ IPtyProcess *PtyQt::createPtyProcess(IPtyProcess::PtyType ptyType) {
     return new ConPtyProcess();
 }
 
-#endif
 #endif
 
 #ifdef Q_OS_UNIX

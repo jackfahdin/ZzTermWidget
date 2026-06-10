@@ -12,6 +12,8 @@
 #include <QTimer>
 #include <QThread>
 
+#include <thread>
+
 //Taken from the RS5 Windows SDK, but redefined here in case we're targeting <= 17733
 //Just for compile, ConPty doesn't work with Windows SDK < 17733
 #ifndef PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE
@@ -82,7 +84,7 @@ private:
     HPCON m_ptyHandler{INVALID_HANDLE_VALUE};
     HANDLE m_hPipeIn{INVALID_HANDLE_VALUE}, m_hPipeOut{INVALID_HANDLE_VALUE};
 
-    QThread *m_readThread{nullptr};
+    std::jthread m_readThread;
     QMutex m_bufferMutex;
     PtyBuffer m_buffer;
     bool m_aboutToDestruct{false};

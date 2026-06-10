@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QThread>
+#include <QVarLengthArray>
 #include <sstream>
 #include <QTimer>
 #include <QMutexLocker>
@@ -157,7 +158,8 @@ WinNTControl::WinNTControl() :
     // NOTE: Use LoadLibraryExW with LOAD_LIBRARY_SEARCH_SYSTEM32 flag below to avoid unneeded directory traversal.
     //       This has triggered CPG boot IO warnings in the past.
     _NtDllDll(/*THROW_LAST_ERROR_IF_NULL*/(LoadLibraryExW(L"ntdll.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32))),
-    _NtOpenFile(reinterpret_cast<PfnNtOpenFile>(/*THROW_LAST_ERROR_IF_NULL*/(GetProcAddress(_NtDllDll.get(), "NtOpenFile"))))
+    // Cast via void(*)() to avoid GCC's -Wcast-function-type (which exempts that type).
+    _NtOpenFile(reinterpret_cast<PfnNtOpenFile>(reinterpret_cast<void (*)()>(/*THROW_LAST_ERROR_IF_NULL*/(GetProcAddress(_NtDllDll.get(), "NtOpenFile")))))
 {
 }
 
@@ -227,14 +229,18 @@ _CreateHandle(
     }
 
     UNICODE_STRING Name;
+#if defined(_MSC_VER)
 #pragma warning(suppress : 26492) // const_cast is prohibited, but we can't avoid it for filling UNICODE_STRING.
+#endif
     Name.Buffer = const_cast<wchar_t*>(DeviceName);
     //Name.Length = gsl::narrow_cast<USHORT>((wcslen(DeviceName) * sizeof(wchar_t)));
     Name.Length = static_cast<unsigned short>((wcslen(DeviceName) * sizeof(wchar_t)));
     Name.MaximumLength = Name.Length + sizeof(wchar_t);
 
     OBJECT_ATTRIBUTES ObjectAttributes;
+#if defined(_MSC_VER)
 #pragma warning(suppress : 26477) // The QOS part of this macro in the define is 0. Can't fix that.
+#endif
     InitializeObjectAttributes(&ObjectAttributes,
                                &Name,
                                Flags,
@@ -430,7 +436,7 @@ HRESULT _CreatePseudoConsole(const HANDLE hToken,
                signalPipeConhostSide.get(),
                serverHandle.get());
 
-    STARTUPINFOEXW siEx{ 0 };
+    STARTUPINFOEXW siEx{};
     siEx.StartupInfo.cb = sizeof(STARTUPINFOEXW);
     siEx.StartupInfo.hStdInput = hInput;
     siEx.StartupInfo.hStdOutput = hOutput;
@@ -908,7 +914,6 @@ ConPtyProcess::ConPtyProcess()
     , m_ptyHandler { INVALID_HANDLE_VALUE }
     , m_hPipeIn { INVALID_HANDLE_VALUE }
     , m_hPipeOut { INVALID_HANDLE_VALUE }
-    , m_readThread(nullptr)
 {
    qRegisterMetaType<HANDLE>("HANDLE");
 }
@@ -1013,7 +1018,7 @@ bool ConPtyProcess::startProcess(const QString &executable,
                      }, Qt::QueuedConnection);
 
     //this code runned in separate thread
-    m_readThread = QThread::create([this]() {
+    m_readThread = std::jthread([this](std::stop_token stoken) {
         //buffers
         const DWORD BUFF_SIZE{1024};
         char szBuffer[BUFF_SIZE]{};
@@ -1032,15 +1037,12 @@ bool ConPtyProcess::startProcess(const QString &executable,
             }
 
             const bool brokenPipe = !result && GetLastError() == ERROR_BROKEN_PIPE;
-            if (QThread::currentThread()->isInterruptionRequested() || brokenPipe)
+            if (stoken.stop_requested() || brokenPipe)
                 break;
         }
 
         CancelIoEx(m_hPipeIn, nullptr);
     });
-
-    //start read thread
-    m_readThread->start();
 
     return true;
 }
@@ -1060,8 +1062,6 @@ bool ConPtyProcess::resize(qint16 cols, qint16 rows)
     }
 
     return res;
-
-    return true;
 }
 
 bool ConPtyProcess::kill()
@@ -1083,12 +1083,11 @@ bool ConPtyProcess::kill()
         m_hPipeIn = INVALID_HANDLE_VALUE;
     }
 
-    if (m_readThread) {
-        m_readThread->requestInterruption();
-        if (!m_readThread->wait(1000))
-            m_readThread->terminate();
-        m_readThread->deleteLater();
-        m_readThread = nullptr;
+    if (m_readThread.joinable()) {
+        // The pipes are already closed above, so the blocking ReadFile will
+        // return and let the loop observe the stop request and exit.
+        m_readThread.request_stop();
+        m_readThread.join();
     }
 
     delete m_shellCloseWaitNotifier;
@@ -1152,8 +1151,69 @@ qint64 ConPtyProcess::write(const QByteArray &byteArray)
 }
 
 
+// Reads the CurrentDirectory of another process out of its PEB. Returns an empty
+// string on any failure, so callers can fall back to a sensible default.
+static QString readProcessCurrentDirectory(HANDLE hProcess)
+{
+#ifdef _WIN64
+    if (hProcess == nullptr || hProcess == INVALID_HANDLE_VALUE)
+        return QString();
+
+    typedef NTSTATUS(NTAPI * PfnNtQueryInformationProcess)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
+    // Cast via void(*)() to avoid GCC's -Wcast-function-type (which exempts that type).
+    static const auto pNtQueryInformationProcess = reinterpret_cast<PfnNtQueryInformationProcess>(
+        reinterpret_cast<void (*)()>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess")));
+    if (pNtQueryInformationProcess == nullptr)
+        return QString();
+
+    PROCESS_BASIC_INFORMATION pbi{};
+    if (FAILED_NTSTATUS(pNtQueryInformationProcess(hProcess, ProcessBasicInformation, &pbi, sizeof(pbi), nullptr)))
+        return QString();
+    if (pbi.PebBaseAddress == nullptr)
+        return QString();
+
+    // x64 layout: PEB::ProcessParameters lives at offset 0x20, and
+    // RTL_USER_PROCESS_PARAMETERS::CurrentDirectory.DosPath (UNICODE_STRING) at 0x38.
+    constexpr SIZE_T kProcessParametersOffset = 0x20;
+    constexpr SIZE_T kCurrentDirectoryOffset = 0x38;
+
+    PVOID processParameters = nullptr;
+    if (!ReadProcessMemory(hProcess,
+                           reinterpret_cast<PBYTE>(pbi.PebBaseAddress) + kProcessParametersOffset,
+                           &processParameters, sizeof(processParameters), nullptr)
+        || processParameters == nullptr)
+        return QString();
+
+    UNICODE_STRING dosPath{};
+    if (!ReadProcessMemory(hProcess,
+                           reinterpret_cast<PBYTE>(processParameters) + kCurrentDirectoryOffset,
+                           &dosPath, sizeof(dosPath), nullptr)
+        || dosPath.Length == 0 || dosPath.Buffer == nullptr)
+        return QString();
+
+    QVarLengthArray<wchar_t> buffer(dosPath.Length / sizeof(wchar_t));
+    if (!ReadProcessMemory(hProcess, dosPath.Buffer, buffer.data(), dosPath.Length, nullptr))
+        return QString();
+
+    QString dir = QString::fromWCharArray(buffer.data(), buffer.size());
+    // The PEB CurrentDirectory is usually stored with a trailing separator.
+    while (dir.endsWith(QLatin1Char('\\')) || dir.endsWith(QLatin1Char('/')))
+        dir.chop(1);
+    return dir;
+#else
+    Q_UNUSED(hProcess);
+    return QString();
+#endif
+}
+
 QString ConPtyProcess::currentDir()
 {
+    // Query the spawned shell's real working directory (it updates as the user 'cd's).
+    const QString dir = readProcessCurrentDirectory(m_shellProcessInformation.hProcess);
+    if (!dir.isEmpty())
+        return dir;
+
+    // Fallback to the host process directory if the shell PEB couldn't be read.
     return QDir::currentPath();
 }
 
