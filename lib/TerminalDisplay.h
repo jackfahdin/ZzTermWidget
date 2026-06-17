@@ -107,7 +107,7 @@ public:
 
     /** Sets the background image of the terminal display. */
     void setBackgroundPixmap(QPixmap *backgroundImage);
-    void reloadBackgroundPixmap(void);
+    void reloadBackgroundPixmap();
     void setBackgroundImage(const QString& backgroundImage);
     void setBackgroundMovie(const QString& backgroundImage);
     void setBackgroundVideo(const QString& backgroundImage);
@@ -568,7 +568,7 @@ public slots:
     QString screenGet(int row1, int col1, int row2, int col2, int mode);
 
     void setLocked(bool enabled) { _isLocked = enabled; }
-    void repaintDisplay(void) {
+    void repaintDisplay() {
         // FIXME: we must call hide() and show() to force a repaint,
         // this is a bad hack, but it works
     #if defined(Q_OS_LINUX)
@@ -630,7 +630,7 @@ signals:
     void notifyBell();
     void usesMouseChanged();
 
-    void handleCtrlC(void);
+    void handleCtrlC();
 
 protected:
     bool event( QEvent * ) override;

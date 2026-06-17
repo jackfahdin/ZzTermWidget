@@ -568,7 +568,7 @@ void QTermWidget::setFlowControlEnabled(bool enabled) {
     emit flowControlEnabledChanged(enabled);
 }
 
-bool QTermWidget::flowControlEnabled(void) {
+bool QTermWidget::flowControlEnabled() const {
     return m_flowControl;
 }
 
@@ -583,7 +583,7 @@ QStringList QTermWidget::availableKeyBindings() {
     return KeyboardTranslatorManager::instance()->allTranslators();
 }
 
-QString QTermWidget::keyBindings() {
+QString QTermWidget::keyBindings() const {
     return m_emulation->keyBindings();
 }
 
@@ -600,15 +600,15 @@ void QTermWidget::setMotionAfterPasting(int action) {
     m_terminalDisplay->setMotionAfterPasting(static_cast<MotionAfterPasting>(action));
 }
 
-int QTermWidget::historyLinesCount() {
+int QTermWidget::historyLinesCount() const {
     return m_terminalDisplay->screenWindow()->screen()->getHistLines();
 }
 
-int QTermWidget::screenColumnsCount() {
+int QTermWidget::screenColumnsCount() const {
     return m_terminalDisplay->screenWindow()->screen()->getColumns();
 }
 
-int QTermWidget::screenLinesCount() {
+int QTermWidget::screenLinesCount() const {
     return m_terminalDisplay->screenWindow()->screen()->getLines();
 }
 
@@ -628,7 +628,7 @@ void QTermWidget::getSelectionEnd(int& row, int& column) {
     m_terminalDisplay->screenWindow()->screen()->getSelectionEnd(column, row);
 }
 
-QString QTermWidget::selectedText(bool preserveLineBreaks) {
+QString QTermWidget::selectedText(bool preserveLineBreaks) const {
     return m_terminalDisplay->screenWindow()->screen()->selectedText(preserveLineBreaks);
 }
 
@@ -714,7 +714,7 @@ void QTermWidget::screenShot(QPixmap *pixmap) {
     *pixmap = currPixmap.scaled(pixmap->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
 }
 
-void QTermWidget::repaintDisplay(void) {
+void QTermWidget::repaintDisplay() {
     m_terminalDisplay->repaintDisplay();
 }
 
@@ -769,7 +769,7 @@ void QTermWidget::addHighLightText(const QString &text, const QColor &color) {
     m_terminalDisplay->repaint();
 }
 
-QMap<QString, QColor> QTermWidget::getHighLightTexts(void) {
+QMap<QString, QColor> QTermWidget::getHighLightTexts() const {
     QMap<QString, QColor> highLightTexts;
     for (int i = 0; i < m_highLightTexts.size(); i++) {
         highLightTexts.insert(m_highLightTexts.at(i)->text, m_highLightTexts.at(i)->color);
@@ -799,7 +799,7 @@ void QTermWidget::removeHighLightText(const QString &text) {
     m_terminalDisplay->repaint();
 }
 
-void QTermWidget::clearHighLightTexts(void) {
+void QTermWidget::clearHighLightTexts() {
     for (int i = 0; i < m_highLightTexts.size(); i++) {
         m_terminalDisplay->filterChain()->removeFilter(m_highLightTexts.at(i)->regExpFilter);
         delete m_highLightTexts.at(i);
@@ -813,7 +813,7 @@ void QTermWidget::setWordCharacters(const QString &wordCharacters) {
     m_terminalDisplay->setWordCharacters(wordCharacters);
 }
 
-QString QTermWidget::wordCharacters(void) {
+QString QTermWidget::wordCharacters() const {
     return m_terminalDisplay->wordCharacters();
 }
 
@@ -878,7 +878,7 @@ void QTermWidget::setMessageParentWidget(QWidget *parent) {
     m_terminalDisplay->setMessageParentWidget(messageParentWidget);
 }
 
-void QTermWidget::reTranslateUi(void) {
+void QTermWidget::reTranslateUi() {
     m_searchBar->retranslateUi();
 }
 

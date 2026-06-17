@@ -446,8 +446,8 @@ signals:
     void cursorChanged(KeyboardCursorShape cursorShape, bool blinkingCursorEnabled);
 
     void handleCommandFromKeyboard(KeyboardTranslator::Command command);
-    void handleCtrlC(void);
-    void outputFromKeypressEvent(void);
+    void handleCtrlC();
+    void outputFromKeypressEvent();
 
 protected:
     virtual void setMode(int mode) = 0;

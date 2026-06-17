@@ -135,7 +135,7 @@ public:
     void setFlowControlEnabled(bool enabled);
 
     // Returns whether flow control is enabled
-    bool flowControlEnabled(void);
+    bool flowControlEnabled() const;
 
     /**
      * Sets whether the flow control warning box should be shown
@@ -148,15 +148,15 @@ public:
     static QStringList availableKeyBindings();
 
     //! Return current key bindings
-    QString keyBindings();
+    QString keyBindings() const;
 
     void setMotionAfterPasting(int);
 
     /** Return the number of lines in the history buffer. */
-    int historyLinesCount();
+    int historyLinesCount() const;
 
-    int screenColumnsCount();
-    int screenLinesCount();
+    int screenColumnsCount() const;
+    int screenLinesCount() const;
 
     void setSelectionStart(int row, int column);
     void setSelectionEnd(int row, int column);
@@ -168,7 +168,7 @@ public:
      * @param preserveLineBreaks Specifies whether new line characters should
      * be inserted into the returned text at the end of each terminal line.
      */
-    QString selectedText(bool preserveLineBreaks = true);
+    QString selectedText(bool preserveLineBreaks = true) const;
 
     void setMonitorActivity(bool);
     void setMonitorSilence(bool);
@@ -241,11 +241,11 @@ public:
     void addHighLightText(const QString &text, const QColor &color);
     bool isContainHighLightText(const QString &text);
     void removeHighLightText(const QString &text);
-    void clearHighLightTexts(void);
-    QMap<QString, QColor> getHighLightTexts(void);
+    void clearHighLightTexts();
+    QMap<QString, QColor> getHighLightTexts() const;
 
     void setWordCharacters(const QString &wordCharacters);
-    QString wordCharacters(void);
+    QString wordCharacters() const;
 
     void autoHideMouseAfter(int delay);
 
@@ -265,7 +265,7 @@ public:
     void setUrlFilterEnabled(bool enable);
 
     void setMessageParentWidget(QWidget *parent);
-    void reTranslateUi(void);
+    void reTranslateUi();
     void set_fix_quardCRT_issue33(bool fix);
 
 signals:
@@ -305,7 +305,7 @@ signals:
     void mousePressEventForwarded(QMouseEvent* event);
     void zmodemSendDetected();
     void zmodemRecvDetected();
-    void handleCtrlC(void);
+    void handleCtrlC();
 
 public slots:
     // Copy terminal to clipboard
@@ -336,7 +336,7 @@ public slots:
     void saveHistory(QTextStream *stream, int format = 0, int start = -1, int end = -1);
     void screenShot(QPixmap *pixmap);
     void screenShot(const QString &fileName);
-    void repaintDisplay(void);
+    void repaintDisplay();
 
 protected:
     void resizeEvent(QResizeEvent *) override;

@@ -758,7 +758,7 @@ void TerminalDisplay::setBackgroundPixmap(QPixmap *backgroundImage) {
     }
 }
 
-void TerminalDisplay::reloadBackgroundPixmap(void) { update(); }
+void TerminalDisplay::reloadBackgroundPixmap() { update(); }
 
 void TerminalDisplay::setBackgroundImage(const QString &backgroundImage) {
     if (!backgroundImage.isEmpty()) {

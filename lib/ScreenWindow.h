@@ -245,7 +245,7 @@ signals:
 
     void scrollToEnd();
 
-    void handleCtrlC(void);
+    void handleCtrlC();
 
 private:
     int endWindowLine() const;
