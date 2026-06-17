@@ -274,34 +274,6 @@ void ColorScheme::read(const QString &fileName) {
     }
 }
 
-#if 0
-// implemented upstream - user apps
-void ColorScheme::read(KConfig& config) {
-    KConfigGroup configGroup = config.group("General");
-
-    QString description = configGroup.readEntry("Description", QObject::tr("Un-named Color Scheme"));
-
-    _description = tr(description.toUtf8());
-    _opacity = configGroup.readEntry("Opacity",qreal(1.0));
-
-    for (int i=0 ; i < TABLE_COLORS ; i++) {
-        readColorEntry(config,i);
-    }
-}
-
-void ColorScheme::write(KConfig& config) const {
-    KConfigGroup configGroup = config.group("General");
-
-    configGroup.writeEntry("Description",_description);
-    configGroup.writeEntry("Opacity",_opacity);
-
-    for (int i=0 ; i < TABLE_COLORS ; i++) {
-        RandomizationRange random = _randomTable != 0 ? _randomTable[i] : RandomizationRange();
-        writeColorEntry(config,colorNameForIndex(i),colorTable()[i],random);
-    }
-}
-#endif
-
 QString ColorScheme::colorNameForIndex(int index) {
     Q_ASSERT(index >= 0 && index < TABLE_COLORS);
 
