@@ -480,7 +480,7 @@ QVector<LineProperty> Screen::getLineProperties(int startLine,
     for (int line = startLine; line < startLine + linesInHistory; line++) {
         // TODO Support for line properties other than wrapped lines
         if (history->isWrappedLine(line)) {
-            result[index] = (LineProperty)(result[index] | LINE_WRAPPED);
+            result[index] = static_cast<LineProperty>(result[index] | LINE_WRAPPED);
         }
         index++;
     }
@@ -655,7 +655,7 @@ void Screen::displayCharacter(wchar_t c) {
             if (w > 0) {
                 if (cuX + 1 > columns) {
                     if (getMode(MODE_Wrap)) {
-                        lineProperties[cuY] = (LineProperty)(lineProperties[cuY] | LINE_WRAPPED);
+                        lineProperties[cuY] = static_cast<LineProperty>(lineProperties[cuY] | LINE_WRAPPED);
                         nextLine();
                     } else {
                         cuX = columns - 1;
@@ -702,7 +702,7 @@ void Screen::displayCharacter(wchar_t c) {
 notcombine:
     if (cuX + w > columns) {
         if (getMode(MODE_Wrap)) {
-            lineProperties[cuY] = (LineProperty)(lineProperties[cuY] | LINE_WRAPPED);
+            lineProperties[cuY] = static_cast<LineProperty>(lineProperties[cuY] | LINE_WRAPPED);
             nextLine();
         } else {
             cuX = columns - w;
@@ -1364,9 +1364,9 @@ const HistoryType &Screen::getScroll() const { return history->getType(); }
 
 void Screen::setLineProperty(LineProperty property, bool enable) {
     if (enable)
-        lineProperties[cuY] = (LineProperty)(lineProperties[cuY] | property);
+        lineProperties[cuY] = static_cast<LineProperty>(lineProperties[cuY] | property);
     else
-        lineProperties[cuY] = (LineProperty)(lineProperties[cuY] & ~property);
+        lineProperties[cuY] = static_cast<LineProperty>(lineProperties[cuY] & ~property);
 }
 
 void Screen::fillWithDefaultChar(Character *dest, int count) {

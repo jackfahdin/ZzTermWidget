@@ -270,7 +270,7 @@ void QTermWidget::setTerminalBackgroundVideo(const QString& backgroundVideo) {
 }
 
 void QTermWidget::setTerminalBackgroundMode(int mode) {
-    m_terminalDisplay->setBackgroundMode((BackgroundMode)mode);
+    m_terminalDisplay->setBackgroundMode(static_cast<BackgroundMode>(mode));
 }
 
 void QTermWidget::setTextCodec(QStringEncoder codec) {
@@ -597,7 +597,7 @@ void QTermWidget::toggleShowSearchBar() {
 }
 
 void QTermWidget::setMotionAfterPasting(int action) {
-    m_terminalDisplay->setMotionAfterPasting((MotionAfterPasting) action);
+    m_terminalDisplay->setMotionAfterPasting(static_cast<MotionAfterPasting>(action));
 }
 
 int QTermWidget::historyLinesCount() {
@@ -656,7 +656,7 @@ void QTermWidget::setKeyboardCursorShape(KeyboardCursorShape shape) {
 }
 
 void QTermWidget::setKeyboardCursorShape(uint32_t shape) {
-    m_terminalDisplay->setKeyboardCursorShape((KeyboardCursorShape)shape);
+    m_terminalDisplay->setKeyboardCursorShape(static_cast<QTermWidget::KeyboardCursorShape>(shape));
 }
 
 void QTermWidget::setBlinkingCursor(bool blink) {
