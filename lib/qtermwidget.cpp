@@ -37,7 +37,7 @@
 #define QTERMW_HLIGHT "qtermw_hlight"
 
 
-QTermWidget::QTermWidget(QWidget *messageParentWidget, QWidget *parent)
+QTermWidget::QTermWidget(QWidget *msgParent, QWidget *parent)
     : QWidget(parent) {
     m_layout = new QVBoxLayout(this);
     m_layout->setContentsMargins(0, 0, 0, 0);
@@ -82,7 +82,7 @@ QTermWidget::QTermWidget(QWidget *messageParentWidget, QWidget *parent)
 
     m_layout->addWidget(m_terminalDisplay);
     m_terminalDisplay->setObjectName("terminalDisplay");
-    setMessageParentWidget(messageParentWidget?messageParentWidget:this);
+    setMessageParentWidget(msgParent ? msgParent : this);
 
     connect(m_terminalDisplay, &TerminalDisplay::notifyBell, this, &QTermWidget::notifyBell);
     connect(m_terminalDisplay, &TerminalDisplay::handleCtrlC, this, &QTermWidget::handleCtrlC);

@@ -58,7 +58,7 @@ public:
     using KeyboardCursorShape = Emulation::KeyboardCursorShape;
 
     //Creation of widget
-    QTermWidget(QWidget *messageParentWidget = nullptr, QWidget *parent = nullptr);
+    QTermWidget(QWidget *msgParent = nullptr, QWidget *parent = nullptr);
 
     ~QTermWidget() override;
 
