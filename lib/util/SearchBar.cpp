@@ -117,7 +117,7 @@ void SearchBar::setText(const QString &text) {
     return widget.searchTextEdit->setText(text);
 }
 
-void SearchBar::retranslateUi(void) {
+void SearchBar::retranslateUi() {
     widget.retranslateUi(this);
     m_matchCaseMenuEntry->setText(tr("Match case"));
     m_useRegularExpressionMenuEntry->setText(tr("Regular expression"));

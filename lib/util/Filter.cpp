@@ -284,9 +284,9 @@ RegExpFilter::HotSpot::HotSpot(int startLine, int startColumn, int endLine,
     setType(Marker);
 }
 
-void RegExpFilter::HotSpot::clickAction(void) {}
-QString RegExpFilter::HotSpot::clickActionToolTip(void) { return QString(); }
-bool RegExpFilter::HotSpot::hasClickAction(void) { return false; }
+void RegExpFilter::HotSpot::clickAction() {}
+QString RegExpFilter::HotSpot::clickActionToolTip() { return QString(); }
+bool RegExpFilter::HotSpot::hasClickAction() { return false; }
 void RegExpFilter::HotSpot::setCapturedTexts(const QStringList &texts) {
   _capturedTexts = texts;
 }
@@ -424,7 +424,7 @@ UrlFilter::HotSpot::UrlType UrlFilter::HotSpot::urlType() const {
         return Unknown;
 }
 
-bool UrlFilter::HotSpot::hasClickAction(void) {
+bool UrlFilter::HotSpot::hasClickAction() {
     const UrlType kind = urlType();
     if (kind == StandardUrl) {
         return true;
@@ -434,7 +434,7 @@ bool UrlFilter::HotSpot::hasClickAction(void) {
     return false;
 }
 
-QString UrlFilter::HotSpot::clickActionToolTip(void) {
+QString UrlFilter::HotSpot::clickActionToolTip() {
     const UrlType kind = urlType();
     if (kind == StandardUrl) {
         return tr("Follow link (ctrl + click)");
@@ -444,7 +444,7 @@ QString UrlFilter::HotSpot::clickActionToolTip(void) {
     return QString();
 }
 
-void UrlFilter::HotSpot::clickAction(void) {
+void UrlFilter::HotSpot::clickAction() {
     QString url = capturedTexts().constFirst();
     const UrlType kind = urlType();
 

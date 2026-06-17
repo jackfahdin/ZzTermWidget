@@ -36,7 +36,7 @@ public:
     bool matchCase();
     bool highlightAllMatches();
     void setText(const QString &text);
-    void retranslateUi(void);
+    void retranslateUi();
 
 public slots:
     void noMatchFound();

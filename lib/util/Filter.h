@@ -106,9 +106,9 @@ public:
             * one of the object names from the actions() list.  In which case the associated
             * action should be performed.
             */
-        virtual void clickAction(void) = 0;
-        virtual QString clickActionToolTip(void) = 0;
-        virtual bool hasClickAction(void) = 0;
+        virtual void clickAction() = 0;
+        virtual QString clickActionToolTip() = 0;
+        virtual bool hasClickAction() = 0;
         /**
             * Returns a list of actions associated with the hotspot which can be used in a
             * menu or toolbar
@@ -197,9 +197,9 @@ public:
     class HotSpot : public Filter::HotSpot {
     public:
         HotSpot(int startLine, int startColumn, int endLine , int endColumn);
-        void clickAction(void) override;
-        QString clickActionToolTip(void) override;
-        bool hasClickAction(void) override;
+        void clickAction() override;
+        QString clickActionToolTip() override;
+        bool hasClickAction() override;
 
         /** Sets the captured texts associated with this hotspot */
         void setCapturedTexts(const QStringList& texts);
@@ -272,9 +272,9 @@ public:
          * Open a web browser at the current URL.  The url itself can be determined using
          * the capturedTexts() method.
          */
-        void clickAction(void) override;
-        QString clickActionToolTip(void) override;
-        bool hasClickAction(void) override;
+        void clickAction() override;
+        QString clickActionToolTip() override;
+        bool hasClickAction() override;
 
     private:
         enum UrlType {
