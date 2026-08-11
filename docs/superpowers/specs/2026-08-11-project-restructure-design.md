@@ -94,6 +94,11 @@ example/
 - `QTermWidget` 构造函数恢复 translator 安装：按 `QLocale::system()` 从 qrc 加载对应 `.qm`，`reTranslateUi` 接口保留可用。
 - CI 各平台安装 Qt 时补充 linguist 组件。
 
+## 第三方库决策
+
+- **utf8proc**：保留。该领域事实标准（Julia 语言同款），单文件零依赖；自研 = 自维护 Unicode 数据表，不划算；ICU 过重。升级到最新稳定版 **2.11.3**（当前 vendored 2.9.0 为 2023 年版），获得 Unicode 17 数据与更准确的宽度表，直接改善 CJK/emoji 宽度判定。
+- **ptyqt**：保留。已是深度定制的跨平台 PTY 抽象（内嵌 ConPTY 实现 + jthread），市面无更好替代。
+
 ## 6. 验证方式
 
 - 每个 commit 前本机构建验证：`cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel`。
@@ -109,6 +114,7 @@ example/
 3. `fix: 修复 URL 过滤器开关、历史大小语义、sizeHint、CI 分支名`
 4. `feat: 移植上游 DCS/APC/SOS/PM 控制串与 DECRQM 模式查询支持`
 5. `feat: 修复翻译链（lrelease 编译 + qrc 内嵌 + 运行时加载）`
+6. `chore: 升级 vendored utf8proc 2.9.0 → 2.11.3`
 
 ## 风险与权衡
 
