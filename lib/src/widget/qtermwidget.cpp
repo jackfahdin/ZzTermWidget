@@ -40,6 +40,18 @@
 #define QTERMW_HLIGHT "qtermw_hlight"
 
 
+/**
+ * @brief 强制初始化内嵌在静态库中的 res.qrc 资源（配色方案、键位布局）。
+ *
+ * 静态库中的 qrc 对象文件若无人引用会被链接器丢弃，必须显式初始化。
+ * 本函数所在的 qtermwidget.cpp 编译单元必然随 QTermWidget 一起被链接，
+ * 因此对 qInitResources_res() 的引用能把 res 资源对象从归档中拉入最终二进制。
+ */
+static void initEmbeddedResources()
+{
+    Q_INIT_RESOURCE(res);
+}
+
 // 按系统 locale 从 qrc 加载库自身翻译；QTranslator 有意不释放，生命周期与 QCoreApplication 一致。
 static void installQTermWidgetTranslator()
 {
@@ -63,6 +75,7 @@ static void installQTermWidgetTranslator()
 
 QTermWidget::QTermWidget(QWidget *msgParent, QWidget *parent)
     : QWidget(parent) {
+    initEmbeddedResources();
     installQTermWidgetTranslator();
     m_layout = new QVBoxLayout(this);
     m_layout->setContentsMargins(0, 0, 0, 0);
