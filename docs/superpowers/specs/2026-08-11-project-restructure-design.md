@@ -90,9 +90,8 @@ example/
 
 ## 5. 翻译链修复
 
-- `lib/CMakeLists.txt` 增加 `qt_add_translations`（或 lrelease 自定义目标）将 38 个 `.ts` 编译为 `.qm`，通过 qrc 内嵌。
+- 翻译编译用 `qt_add_lrelease` + `qt_add_resources` 内嵌 qrc，并以 `if(TARGET Qt6::lrelease)` guard：环境无 linguist 工具时静默跳过，保证 CI（不装 linguist）与任何环境都能构建。
 - `QTermWidget` 构造函数恢复 translator 安装：按 `QLocale::system()` 从 qrc 加载对应 `.qm`，`reTranslateUi` 接口保留可用。
-- CI 各平台安装 Qt 时补充 linguist 组件。
 
 ## 第三方库决策
 
