@@ -35,6 +35,7 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS
     Network
     Xml
     Multimedia
+    LinguistTools
 )
 
 set(CMAKE_AUTOMOC ON)

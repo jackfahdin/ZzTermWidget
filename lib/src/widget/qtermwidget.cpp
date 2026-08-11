@@ -22,6 +22,9 @@
 #include <QDir>
 #include <QMessageBox>
 #include <QRegularExpression>
+#include <QTranslator>
+#include <QLocale>
+#include <QCoreApplication>
 
 #include "CharacterColor.h"
 #include "Screen.h"
@@ -37,8 +40,30 @@
 #define QTERMW_HLIGHT "qtermw_hlight"
 
 
+// 按系统 locale 从 qrc 加载库自身翻译；QTranslator 有意不释放，生命周期与 QCoreApplication 一致。
+static void installQTermWidgetTranslator()
+{
+#ifdef QTERMWIDGET_EMBED_TRANSLATIONS
+    // 静态库中的 qrc 对象文件若无人引用会被链接器丢弃，必须显式初始化。
+    Q_INIT_RESOURCE(qtermwidget_translations);
+#endif
+    static QTranslator *translator = [] {
+        auto *t = new QTranslator(QCoreApplication::instance());
+        if (t->load(QLocale::system(), QStringLiteral("qtermwidget"), QStringLiteral("_"),
+                    QStringLiteral(":/lib/qtermwidget/translations"))) {
+            QCoreApplication::installTranslator(t);
+        } else {
+            delete t;
+            t = nullptr;
+        }
+        return t;
+    }();
+    Q_UNUSED(translator);
+}
+
 QTermWidget::QTermWidget(QWidget *msgParent, QWidget *parent)
     : QWidget(parent) {
+    installQTermWidgetTranslator();
     m_layout = new QVBoxLayout(this);
     m_layout->setContentsMargins(0, 0, 0, 0);
     setLayout(m_layout);
