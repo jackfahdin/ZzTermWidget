@@ -73,6 +73,7 @@ enum BackgroundMode {
     Zoom,
     Fit,
     Center,
+    Fill,
     Tile
 };
 
@@ -705,7 +706,8 @@ private:
     // determine the width of this text
     int textWidth(int startColumn, int length, int line) const;
     // determine the area that encloses this series of characters
-    QRect calculateTextArea(int topLeftX, int topLeftY, int startColumn, int line, int length);
+    QRect calculateTextArea(int topLeftX, int topLeftY, int startColumn, int line, int length,
+                            const QTransform &textScale);
 
     // divides the part of the display specified by 'rect' into
     // fragments according to their colors and styles and calls
@@ -777,6 +779,31 @@ private:
     // returns the position of the cursor in columns and lines
     QPoint cursorPosition() const;
 
+    /**
+     * @brief 沿连续折行向上查找行的起始位置（移植自上游 findLineStart）。
+     * @param pnt 起始点（组件坐标行列）。
+     * @return 折行起点的行列位置。
+     */
+    QPoint findLineStart(const QPoint &pnt);
+    /**
+     * @brief 沿连续折行向下查找行的结束位置（移植自上游 findLineEnd）。
+     * @param pnt 起始点（组件坐标行列）。
+     * @return 折行终点的行列位置。
+     */
+    QPoint findLineEnd(const QPoint &pnt);
+    /**
+     * @brief 查找单词选择模式的选区起点，可跨越滚动历史（移植自上游 findWordStart）。
+     * @param pnt 起始点（组件坐标行列）。
+     * @return 单词起点的行列位置。
+     */
+    QPoint findWordStart(const QPoint &pnt);
+    /**
+     * @brief 查找单词选择模式的选区终点，可跨越滚动历史（移植自上游 findWordEnd）。
+     * @param pnt 起始点（组件坐标行列）。
+     * @return 单词终点的行列位置。
+     */
+    QPoint findWordEnd(const QPoint &pnt);
+
     // redraws the cursor
     void updateCursor();
 
@@ -786,6 +813,14 @@ private:
     bool isLineCharString(const std::wstring& string) const;
 
     void hideStaleMouse() const; // conditionally hides the mouse cursor
+
+    /**
+     * @brief 将组件行列坐标换算为字符图像下标，并钳制在图像范围内（移植自上游 loc()，原为宏）。
+     * @param x 列。
+     * @param y 行。
+     * @return _image 数组下标。
+     */
+    int loc(int x, int y) const;
 
     // the window onto the terminal screen which this display
     // is currently showing.
@@ -939,9 +974,6 @@ private:
     int _mouseAutohideDelay;
 
     int _preeditColorIndex = 16; //Color4Intense
-
-    int shiftSelectionStartX = -1;
-    int shiftSelectionStartY = -1;
 
     QWidget *messageParentWidget = nullptr;
 
