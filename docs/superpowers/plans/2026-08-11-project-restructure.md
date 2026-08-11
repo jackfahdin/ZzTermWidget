@@ -19,6 +19,8 @@ cmake --build build --parallel
 
 **注意：** 不要 push；commit 信息按约定式提交（本项目惯例中文/英文混用，沿用中文描述）。
 
+**注释约定（强制）：** 所有新增和修改的代码注释使用 **Doxygen 风格 + 简体中文**（`@brief`/`@param`/`@return`/`@note`/`@see`）。`lib/third_party/` 内 vendored 代码除外（保持上游原样）。移植上游代码时原有英文注释可保留，新写注释一律中文。详见根目录 `AGENTS.md`。
+
 ---
 
 ## 文件结构（整理后）
