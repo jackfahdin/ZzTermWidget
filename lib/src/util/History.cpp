@@ -68,6 +68,103 @@
   A Row(X) data type which allows adding elements to the end.
 */
 
+// History File ///////////////////////////////////////////
+
+/**
+ * @brief 构造基于 QTemporaryFile 的行存储。
+ * @note 与上游的 POSIX mmap/lseek 实现不同，此处统一走 QFile 接口以保证跨平台。
+ */
+HistoryFile::HistoryFile()
+  : length(0),
+    fileMap(nullptr)
+{
+  if (tmpFile.open())
+  {
+    tmpFile.setAutoRemove(true);
+  }
+}
+
+HistoryFile::~HistoryFile()
+{
+    if (fileMap)
+        unmap();
+}
+
+//TODO:  Mapping the entire file in will cause problems if the history file becomes exceedingly large,
+//(ie. larger than available memory).  HistoryFile::map() should only map in sections of the file at a time,
+//to avoid this.
+void HistoryFile::map()
+{
+    Q_ASSERT( fileMap == nullptr );
+
+    fileMap = reinterpret_cast<char*>(tmpFile.map(0, length));
+
+    //if mmap'ing fails, fall back to the seek-read combination
+    if ( fileMap == nullptr )
+    {
+            readWriteBalance = 0;
+    }
+}
+
+void HistoryFile::unmap()
+{
+    bool result = tmpFile.unmap( reinterpret_cast<uchar*>(fileMap) );
+    Q_ASSERT( result ); Q_UNUSED( result )
+
+    fileMap = nullptr;
+}
+
+bool HistoryFile::isMapped() const
+{
+    return (fileMap != nullptr);
+}
+
+void HistoryFile::add(const unsigned char* bytes, int len)
+{
+  if ( fileMap )
+          unmap();
+
+  readWriteBalance++;
+
+  if (!tmpFile.seek(length)) { qWarning("HistoryFile::add.seek failed"); return; }
+  qint64 rc = tmpFile.write(reinterpret_cast<const char*>(bytes), len);
+  if (rc < 0) { qWarning("HistoryFile::add.write failed"); return; }
+  length += static_cast<int>(rc);
+}
+
+void HistoryFile::get(unsigned char* bytes, int len, int loc)
+{
+  //count number of get() calls vs. number of add() calls.
+  //If there are many more get() calls compared with add()
+  //calls (decided by using MAP_THRESHOLD) then mmap the log
+  //file to improve performance.
+  readWriteBalance--;
+  if ( !fileMap && readWriteBalance < MAP_THRESHOLD )
+          map();
+
+  if ( fileMap )
+  {
+    for (int i=0;i<len;i++)
+            bytes[i]=fileMap[loc+i];
+  }
+  else
+  {
+      if (loc < 0 || len < 0 || loc + len > length)
+        fprintf(stderr,"getHist(...,%d,%d): invalid args.\n",len,loc);
+      if (!tmpFile.seek(loc)) { qWarning("HistoryFile::get.seek failed"); return; }
+      tmpFile.read(reinterpret_cast<char*>(bytes), len);
+  }
+}
+
+int HistoryFile::len() const
+{
+  return length;
+}
+
+
+// History Scroll abstract base class //////////////////////////////////////
+
+
 HistoryScroll::HistoryScroll(HistoryType *t) : m_histType(t) {
 }
 
@@ -78,6 +175,88 @@ HistoryScroll::~HistoryScroll() {
 bool HistoryScroll::hasScroll() { 
     return true; 
 }
+
+// File-based history (e.g. file log, no limitation in length) ///////////////////
+
+/*
+  The history can be seen as an array of lines. Each line
+  is an array of cells. The index addresses the start of
+  the lines in the cells buffer.
+
+  Note that index[0] addresses the second line
+  (line #1), while the first line (line #0) starts
+  at 0 in cells.
+*/
+
+HistoryScrollFile::HistoryScrollFile(const QString &logFileName)
+  : HistoryScroll(new HistoryTypeFile(logFileName)),
+  m_logFileName(logFileName)
+{
+}
+
+HistoryScrollFile::~HistoryScrollFile()
+{
+}
+
+int HistoryScrollFile::getLines()
+{
+  return index.len() / sizeof(int);
+}
+
+int HistoryScrollFile::getLineLen(int lineno)
+{
+  return (startOfLine(lineno+1) - startOfLine(lineno)) / sizeof(Character);
+}
+
+bool HistoryScrollFile::isWrappedLine(int lineno)
+{
+  if (lineno>=0 && lineno <= getLines()) {
+    unsigned char flag;
+    lineflags.get((unsigned char*)&flag,sizeof(unsigned char),(lineno)*sizeof(unsigned char));
+    return flag;
+  }
+  return false;
+}
+
+int HistoryScrollFile::startOfLine(int lineno)
+{
+  if (lineno <= 0) return 0;
+  if (lineno <= getLines())
+    {
+
+    if (!index.isMapped())
+            index.map();
+
+    int res = 0;
+    index.get((unsigned char*)&res,sizeof(int),(lineno-1)*sizeof(int));
+    return res;
+    }
+  return cells.len();
+}
+
+void HistoryScrollFile::getCells(int lineno, int colno, int count, Character res[])
+{
+  cells.get((unsigned char*)res,count*sizeof(Character),startOfLine(lineno)+colno*sizeof(Character));
+}
+
+void HistoryScrollFile::addCells(const Character text[], int count)
+{
+  cells.add((unsigned char*)text,count*sizeof(Character));
+}
+
+void HistoryScrollFile::addLine(bool previousWrapped)
+{
+  if (index.isMapped())
+          index.unmap();
+
+  int locn = cells.len();
+  index.add((unsigned char*)&locn,sizeof(int));
+  unsigned char flags = previousWrapped ? 0x01 : 0x00;
+  lineflags.add((unsigned char*)&flags,sizeof(unsigned char));
+}
+
+
+// Buffer-based history (limited to a fixed nb of lines) ////////////////////////
 
 HistoryScrollBuffer::HistoryScrollBuffer(unsigned int maxLineCount)
     : HistoryScroll(new HistoryTypeBuffer(maxLineCount)), _historyBuffer(),
@@ -205,6 +384,58 @@ HistoryScroll *HistoryTypeNone::scroll(HistoryScroll *old) const {
     return new HistoryScrollNone();
 }
 int HistoryTypeNone::maximumLineCount() const { return 0; }
+
+HistoryTypeFile::HistoryTypeFile(const QString& fileName)
+  : m_fileName(fileName)
+{
+}
+
+bool HistoryTypeFile::isEnabled() const
+{
+  return true;
+}
+
+const QString& HistoryTypeFile::getFileName() const
+{
+  return m_fileName;
+}
+
+HistoryScroll* HistoryTypeFile::scroll(HistoryScroll *old) const
+{
+  if (dynamic_cast<HistoryScrollFile *>(old))
+     return old; // Unchanged.
+
+  HistoryScroll *newScroll = new HistoryScrollFile(m_fileName);
+
+  Character line[LINE_SIZE];
+  int lines = (old != nullptr) ? old->getLines() : 0;
+  for(int i = 0; i < lines; i++)
+  {
+     int size = old->getLineLen(i);
+     if (size > LINE_SIZE)
+     {
+        Character *tmp_line = new Character[size];
+        old->getCells(i, 0, size, tmp_line);
+        newScroll->addCells(tmp_line, size);
+        newScroll->addLine(old->isWrappedLine(i));
+        delete [] tmp_line;
+     }
+     else
+     {
+        old->getCells(i, 0, size, line);
+        newScroll->addCells(line, size);
+        newScroll->addLine(old->isWrappedLine(i));
+     }
+  }
+
+  delete old;
+  return newScroll;
+}
+
+int HistoryTypeFile::maximumLineCount() const
+{
+  return 0;
+}
 
 HistoryTypeBuffer::HistoryTypeBuffer(unsigned int nbLines)
     : m_nbLines(nbLines) {}

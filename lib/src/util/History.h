@@ -27,6 +27,48 @@
 
 #include "Character.h"
 
+/*
+   An extendable tmpfile(1) based buffer.
+*/
+
+/**
+ * @brief 基于临时文件的可扩展行存储（Row(X)），仅支持尾部追加与随机读取。
+ * @note 移植自上游 Konsole；读写操作通过 QTemporaryFile 完成，跨平台。
+ */
+class HistoryFile
+{
+public:
+    HistoryFile();
+    virtual ~HistoryFile();
+
+    virtual void add(const unsigned char* bytes, int len);
+    virtual void get(unsigned char* bytes, int len, int loc);
+    virtual int  len() const;
+
+    //mmaps the file in read-only mode
+    void map();
+    //un-mmaps the file
+    void unmap();
+    //returns true if the file is mmap'ed
+    bool isMapped() const;
+
+private:
+    int  length;
+    QTemporaryFile tmpFile;
+
+    //pointer to start of mmap'ed file data, or 0 if the file is not mmap'ed
+    char* fileMap;
+
+    //incremented whenever 'add' is called and decremented whenever
+    //'get' is called.
+    //this is used to detect when a large number of lines are being read and processed from the history
+    //and automatically mmap the file for better performance (saves the overhead of many seek-read calls).
+    int readWriteBalance = 0;
+
+    //when readWriteBalance goes below this threshold, the file will be mmap'ed automatically
+    static const int MAP_THRESHOLD = -1000;
+};
+
 //////////////////////////////////////////////////////////////////////
 // Abstract base class for file and buffer versions
 //////////////////////////////////////////////////////////////////////
@@ -67,6 +109,36 @@ public:
 
 protected:
     HistoryType* m_histType;
+};
+
+//////////////////////////////////////////////////////////////////////
+// File-based history (e.g. file log, no limitation in length)
+//////////////////////////////////////////////////////////////////////
+
+/**
+ * @brief 基于临时文件的历史滚动缓冲，行数无限制（无限历史）。
+ */
+class HistoryScrollFile : public HistoryScroll
+{
+public:
+    HistoryScrollFile(const QString &logFileName);
+    ~HistoryScrollFile() override;
+
+    int  getLines() override;
+    int  getLineLen(int lineno) override;
+    void getCells(int lineno, int colno, int count, Character res[]) override;
+    bool isWrappedLine(int lineno) override;
+
+    void addCells(const Character a[], int count) override;
+    void addLine(bool previousWrapped=false) override;
+
+private:
+    int startOfLine(int lineno);
+
+    QString m_logFileName;
+    HistoryFile index;     // lines Row(int)
+    HistoryFile cells;     // text  Row(Character)
+    HistoryFile lineflags; // flags Row(unsigned char)
 };
 
 class HistoryScrollBuffer : public HistoryScroll
@@ -174,6 +246,24 @@ public:
     int maximumLineCount() const override;
 
     HistoryScroll* scroll(HistoryScroll *) const override;
+};
+
+/**
+ * @brief 基于临时文件的历史类型，行数无限制（用于无限历史，对齐上游）。
+ */
+class HistoryTypeFile : public HistoryType
+{
+public:
+    HistoryTypeFile(const QString& fileName = QString());
+
+    bool isEnabled() const override;
+    virtual const QString& getFileName() const;
+    int maximumLineCount() const override;
+
+    HistoryScroll* scroll(HistoryScroll *) const override;
+
+protected:
+    QString m_fileName;
 };
 
 class HistoryTypeBuffer : public HistoryType

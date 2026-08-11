@@ -231,9 +231,9 @@ void QTermWidget::search(bool forwards, bool next) {
 }
 
 QSize QTermWidget::sizeHint() const {
-    QSize size = m_terminalDisplay->sizeHint();
-    size.rheight() = 150;
-    return size;
+    const QSize size = m_terminalDisplay->sizeHint();
+    // TerminalDisplay 未给出有效高度时回退到历史默认值 150
+    return (size.isValid() && size.height() > 0) ? size : QSize(size.width(), 150);
 }
 
 void QTermWidget::setTerminalSizeHint(bool enabled) {
@@ -342,7 +342,9 @@ void QTermWidget::setSize(const QSize &size) {
 }
 
 void QTermWidget::setHistorySize(int lines) {
-    if (lines <= 0)
+    if (lines < 0)
+        m_emulation->setHistory(HistoryTypeFile());
+    else if (lines == 0)
         m_emulation->setHistory(HistoryTypeNone());
     else
         m_emulation->setHistory(HistoryTypeBuffer(lines));
@@ -861,6 +863,7 @@ void QTermWidget::setUrlFilterEnabled(bool enable) {
     if(m_UrlFilterEnable == enable) {
         return;
     }
+    m_UrlFilterEnable = enable;
     if(enable) {
         m_terminalDisplay->filterChain()->addFilter(m_urlFilter);
     } else {
