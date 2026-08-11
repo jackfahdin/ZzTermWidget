@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-# Version mirrors lib/qtermwidget_version.h
+# Version mirrors lib/include/qtermwidget_version.h
 project(ZzQTermWidget
     VERSION 2.3.0
     DESCRIPTION "Cross-platform Qt terminal widget (QTermWidget fork)"
@@ -8,7 +8,7 @@ project(ZzQTermWidget
     LANGUAGES C CXX
 )
 
-# ConPTY backend (lib/ptyqt) uses std::jthread / std::stop_token, which require C++20.
+# ConPTY backend (lib/third_party/ptyqt) uses std::jthread / std::stop_token, which require C++20.
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -44,6 +44,6 @@ set(CMAKE_AUTORCC ON)
 add_subdirectory(lib)
 
 if(ZZQTERMWIDGET_BUILD_EXAMPLE)
-    add_executable(qtermwidget_example examples_main.cpp)
+    add_executable(qtermwidget_example example/main.cpp)
     target_link_libraries(qtermwidget_example PRIVATE ZzQTermWidget::qtermwidget)
 endif()
