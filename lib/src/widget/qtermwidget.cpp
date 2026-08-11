@@ -164,7 +164,6 @@ QTermWidget::~QTermWidget() {
     clearHighLightTexts();
     delete m_urlFilter;
     delete m_searchBar;
-    emit destroyed();
     delete m_emulation;
 }
 
@@ -382,10 +381,6 @@ void QTermWidget::sendKeyEvent(QKeyEvent *e) {
 void QTermWidget::resizeEvent(QResizeEvent*) {
     //qDebug("global window resizing...with %d %d", this->size().width(), this->size().height());
     m_terminalDisplay->resize(this->size());
-}
-
-void QTermWidget::sessionFinished() {
-    emit finished();
 }
 
 void QTermWidget::updateTerminalSize() {

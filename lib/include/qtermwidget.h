@@ -19,8 +19,6 @@
 #ifndef _Q_TERM_WIDGET
 #define _Q_TERM_WIDGET
 
-#include <QTranslator>
-#include <QLocale>
 #include <QWidget>
 #include <QClipboard>
 #include <QTimer>
@@ -29,7 +27,6 @@
 
 class QVBoxLayout;
 class SearchBar;
-class Session;
 class TerminalDisplay;
 class Emulation;
 class QUrl;
@@ -112,7 +109,7 @@ public:
      *
      * @param lines history size
      *  lines = 0, no history
-     *  lies < 0, infinite history
+     *  lines < 0, infinite history
      */
     void setHistorySize(int lines);
 
@@ -269,7 +266,6 @@ public:
     void set_fix_quardCRT_issue33(bool fix);
 
 signals:
-    void finished();
     void copyAvailable(bool);
     void termGetFocus();
     void termLostFocus();
@@ -342,7 +338,6 @@ protected:
     void resizeEvent(QResizeEvent *) override;
 
 protected slots:
-    void sessionFinished();
     void updateTerminalSize();
     void selectionChanged(bool textSelected);
     void monitorTimerDone();

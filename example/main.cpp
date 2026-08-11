@@ -101,8 +101,6 @@ int main(int argc, char *argv[])
     mainWindow->setCentralWidget(console);
     mainWindow->resize(600, 400);
 
-    QObject::connect(console, &QTermWidget::finished, mainWindow, &QMainWindow::close);
-
     mainWindow->show();
     return app.exec();
 }

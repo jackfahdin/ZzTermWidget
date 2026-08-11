@@ -36,7 +36,6 @@
 #include "Screen.h"
 #include "ScreenWindow.h"
 #include "TerminalCharacterDecoder.h"
-#include "TerminalDisplay.h"
 
 Emulation::Emulation()
     : _currentScreen(nullptr)

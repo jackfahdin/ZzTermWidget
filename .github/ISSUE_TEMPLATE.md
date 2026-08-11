@@ -38,5 +38,5 @@
 * Distribution & Version: 
 * Kernel: 
 * Qt Version: 
-* lxqt-build-tools Version: 
+* Compiler & Version: 
 * Package version: 
