@@ -14,6 +14,24 @@
 - 修复了一些可能的问题，以及在windows上的一些小问题。
 - 从原项目中拣选了部分未完成的PR，进行了一些修改和整合。
 - 去除全部的构建依赖，使用 CMake 构建，通过 `add_subdirectory(lib)` 引入即可，极为方便通过源码引入其他项目。
+- 移植上游 DCS/APC/SOS/PM 控制串吞吃支持与 DECRQM 模式查询应答。
+- 移植上游选择区修复系列（块选择/列选择边界、三击选行等）与双宽高行绘制修复。
+- 移植上游 Fill 背景模式（用背景色填充终端空白区域）。
+- 修复翻译链：lrelease 编译 .ts 为 .qm 并内嵌进 qrc 资源，运行时按系统 locale 自动加载。
+- 修复静态库 res.qrc 资源被链接器剥离导致配色方案不可用的问题。
+- 升级 vendored utf8proc 至 2.11.3（Unicode 17 数据）。
+
+## 目录结构
+
+- `lib/include/` — 对外公共头文件
+- `lib/src/emulation/` — 终端数据解析与处理（Vt102Emulation、Screen 等）
+- `lib/src/display/` — 终端绘制（TerminalDisplay）
+- `lib/src/widget/` — 对外组件封装（QTermWidget）
+- `lib/src/util/` — 配色、键位、过滤器、历史缓冲等辅助类
+- `lib/third_party/utf8proc/` — vendored utf8proc 2.11.3
+- `lib/third_party/ptyqt/` — vendored ptyqt（跨平台 pty 实现）
+- `lib/resources/` — 配色方案、键位布局、翻译与 res.qrc（qrc 前缀 `:/lib/qtermwidget`）
+- `example/` — 示例程序
 
 ## 构建
 
@@ -25,6 +43,8 @@ cmake --build build --parallel
 ```
 
 构建完成后会得到静态库 `qtermwidget`（CMake 目标别名 `ZzQTermWidget::qtermwidget`）以及示例程序 `qtermwidget_example`。
+
+配色方案、键位布局与翻译均已通过 qrc 内嵌进静态库并在运行时自动初始化/加载（翻译按系统 locale 匹配），无需额外部署资源文件。
 
 常用选项：
 
@@ -40,7 +60,7 @@ target_link_libraries(your_target PRIVATE ZzQTermWidget::qtermwidget)
 
 一些注意：
 
-- 原始项目使用 CMake 构建，本项目同样使用 CMake 构建（顶层 `CMakeLists.txt`、`lib/CMakeLists.txt`、`lib/ptyqt/CMakeLists.txt`）。
+- 原始项目使用 CMake 构建，本项目同样使用 CMake 构建（顶层 `CMakeLists.txt`、`lib/CMakeLists.txt`、`lib/third_party/ptyqt/CMakeLists.txt`）。
 - 在Qt6.6.1上测试通过。
 - 本项目完全遵守原始项目的LICENSE，修改新增的代码也遵守原始项目的LICENSE。
 
