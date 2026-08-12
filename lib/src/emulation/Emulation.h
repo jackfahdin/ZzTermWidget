@@ -195,6 +195,14 @@ public:
      */
     bool utf8() const;
 
+    /**
+     * @brief 设置是否允许 OSC 52 序列访问本地剪贴板。
+     * @param enabled true 允许（默认）；false 时 OSC 52 被吞掉不执行。
+     * @note 允许时远程程序可读写本地剪贴板，有安全风险，上层应用可按需关闭。
+     */
+    void setOsc52Enabled(bool enabled);
+    bool osc52Enabled() const;
+
     /** TODO Document me */
     virtual char eraseChar() const;
 
@@ -493,6 +501,9 @@ protected:
     const KeyboardTranslator* _keyTranslator; // the keyboard layout
     
     bool _enableHandleCtrlC;
+
+    /// 是否允许 OSC 52 序列访问本地剪贴板（默认允许，见 setOsc52Enabled()）
+    bool _osc52Enabled = true;
 
 protected slots:
     /**

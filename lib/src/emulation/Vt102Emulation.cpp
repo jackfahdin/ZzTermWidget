@@ -499,6 +499,9 @@ void Vt102Emulation::processOSC() {
     //  Ps = 52 → Manipulate Selection Data. These controls may be disabled using
     //  the allowWindowOps resource.
     case 52: {
+        // 开关关闭时吞掉整个 OSC 52（见 Emulation::setOsc52Enabled 的安全说明）
+        if (!_osc52Enabled)
+            break;
         /* The first, Pc , may contain any character from the set c p s 0 1 2 3 4 5
          * 6 7 . It is used to construct a list of selection parameters for
          * clipboard, primary, select, or cut buffers 0 through 8 respectively, in

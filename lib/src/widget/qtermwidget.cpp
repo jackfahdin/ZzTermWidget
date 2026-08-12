@@ -404,6 +404,14 @@ int QTermWidget::historySize() const {
      }
 }
 
+void QTermWidget::setOsc52Enabled(bool enabled) {
+    m_emulation->setOsc52Enabled(enabled);
+}
+
+bool QTermWidget::osc52Enabled() const {
+    return m_emulation->osc52Enabled();
+}
+
 void QTermWidget::setScrollBarPosition(ScrollBarPosition pos) {
     m_terminalDisplay->setScrollBarPosition(pos);
 }

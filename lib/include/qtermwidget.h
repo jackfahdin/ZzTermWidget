@@ -116,6 +116,13 @@ public:
     // Returns the history size (in lines)
     int historySize() const;
 
+    /**
+     * @brief 设置是否允许 OSC 52 序列访问本地剪贴板（默认允许）。
+     * @see Emulation::setOsc52Enabled
+     */
+    void setOsc52Enabled(bool enabled);
+    bool osc52Enabled() const;
+
     // Presence of scrollbar
     void setScrollBarPosition(ScrollBarPosition);
 

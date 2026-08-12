@@ -156,6 +156,10 @@ bool Emulation::utf8() const {
     return enc && enc.value() == QStringConverter::Encoding::Utf8;
 }
 
+void Emulation::setOsc52Enabled(bool enabled) { _osc52Enabled = enabled; }
+
+bool Emulation::osc52Enabled() const { return _osc52Enabled; }
+
 void Emulation::setCodec(EmulationCodec codec) {
     setCodec(QStringEncoder{codec == Utf8Codec
                               ? QStringConverter::Encoding::Utf8
