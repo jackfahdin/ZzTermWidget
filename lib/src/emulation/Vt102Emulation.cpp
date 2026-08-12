@@ -55,6 +55,8 @@ void Vt102Emulation::reset() {
     resetTokenizer();
     // 退出 token 丢弃模式：否则 reset 后仍会持续吞吃后续输入
     tokenDiscard = false;
+    _kittyFlags = 0;
+    _kittyFlagsStack.clear();
     resetModes();
     resetCharset(0);
     _screen[0]->reset();
@@ -428,8 +430,21 @@ void Vt102Emulation::receiveChar(char32_t cc) {
         // When they appear after s[2] (the private-marker position), consume them
         // so they don't fall through to the dispatch loop or get printed.
         // This handles sequences like ESC[2:=z where '=' appears mid-parameter.
-        if (p >= 4 && cc >= 0x3C && cc <= 0x3F) { 
-            return; 
+        if (p >= 4 && cc >= 0x3C && cc <= 0x3F) {
+            return;
+        }
+
+        // kitty 键盘协议：CSI ? u（查询）与 CSI > flags u（压栈）在通用参数分发前整体拦截，
+        // 避免下方 for 循环按参数逐个触发导致重复应答/重复压栈
+        if (epp() && cc == U'u') {
+            reportKittyKeyboardFlags();
+            resetTokenizer();
+            return;
+        }
+        if (egt() && cc == U'u') {
+            kittyFlagsPush(argv[0]);
+            resetTokenizer();
+            return;
         }
 
         for (int i = 0; i <= argc; i++) {
@@ -1642,6 +1657,14 @@ void Vt102Emulation::processToken(int token, char32_t p, int q) {
         reportSecondaryAttributes();
         break; // VT100
 
+    // kitty 键盘协议：CSI < [count] u（弹栈）/ CSI = flags ; mode u（设置）
+    case TY_CSI_PL('u'):
+        kittyFlagsPop(qMax(1, argv[0]));
+        break;
+    case TY_CSI_PQ('u'):
+        kittyFlagsSet(argv[0], argc >= 1 ? argv[1] : 1);
+        break;
+
     default:
         // Silently ignore all CSI '<' and '=' (private marker) sequences.
         // Token type 12 = TY_CSI_PQ ('='), 13 = TY_CSI_PL ('<');
@@ -2205,6 +2228,45 @@ char Vt102Emulation::eraseChar() const {
         return entry.text().at(0);
     else
         return '\b';
+}
+
+void Vt102Emulation::kittyFlagsPush(quint32 flags) {
+    if (_kittyFlagsStack.size() >= KITTY_FLAGS_STACK_MAX) {
+        // 栈满拒绝（防 DoS）：当前 flags 与栈内容均不变
+        qWarning("Vt102Emulation: kitty keyboard flags stack full, push rejected");
+        return;
+    }
+    _kittyFlagsStack.append(_kittyFlags);
+    _kittyFlags = flags & KITTY_FLAGS_SUPPORTED; // 未实现的 4/8/16 位直接掩掉
+}
+
+void Vt102Emulation::kittyFlagsPop(int count) {
+    for (int i = 0; i < count; i++) {
+        if (_kittyFlagsStack.isEmpty()) {
+            _kittyFlags = 0; // 弹空：所有 flags 复位
+            break;
+        }
+        _kittyFlags = _kittyFlagsStack.takeLast();
+    }
+}
+
+void Vt102Emulation::kittyFlagsSet(quint32 flags, int mode) {
+    flags &= KITTY_FLAGS_SUPPORTED;
+    switch (mode) {
+    case 1: _kittyFlags = flags; break;   // 整体设置（默认）
+    case 2: _kittyFlags |= flags; break;  // 置位指定位
+    case 3: _kittyFlags &= ~flags; break; // 复位指定位
+    default: break;                       // 非法 mode：忽略
+    }
+}
+
+void Vt102Emulation::reportKittyKeyboardFlags() {
+    // 应答 CSI ? flags u：flags 如实上报（仅含已实现的级别 1+2）
+    char tmp[16];
+    const int r = snprintf(tmp, sizeof(tmp), "\033[?%uu", _kittyFlags);
+    if (r <= 0 || r >= static_cast<int>(sizeof(tmp)))
+        return;
+    sendString(tmp);
 }
 
 void Vt102Emulation::reportDecodingError() {

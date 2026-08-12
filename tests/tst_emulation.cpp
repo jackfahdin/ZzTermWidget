@@ -25,6 +25,10 @@ private slots:
     void testOsc8StTerminator();
     void testOsc8ClearLineResetsCurrentLink();
     void testSyncOutputModeSignalAndDecrqm();
+    void testKittyPushQueryPop();
+    void testKittySetModes();
+    void testKittyStackLimit();
+    void testKittyInvalidSequenceIgnored();
 };
 
 /**
@@ -272,6 +276,114 @@ void TestEmulation::testSyncOutputModeSignalAndDecrqm()
 
     emu.receiveData("\033[?2026$p", 9); // DECRQM：复位应答 2（reset）
     QCOMPARE(sent, QByteArray("\033[?2026;2$y"));
+}
+
+/**
+ * @brief kitty 协商：push/query/pop 与 flags 高位掩码（仅支持级别 1+2）。
+ */
+void TestEmulation::testKittyPushQueryPop()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    QByteArray sent;
+    QObject::connect(&emu, &Emulation::sendData,
+                     [&](const char *d, int len) { sent.append(d, len); });
+
+    emu.receiveData("\033[?u", 4); // 查询：默认全关
+    QCOMPARE(sent, QByteArray("\033[?0u"));
+    sent.clear();
+
+    emu.receiveData("\033[>1u", 5); // push 级别 1
+    emu.receiveData("\033[?u", 4);
+    QCOMPARE(sent, QByteArray("\033[?1u"));
+    sent.clear();
+
+    emu.receiveData("\033[>31u", 6); // 高位掩掉，仅保留 1+2
+    emu.receiveData("\033[?u", 4);
+    QCOMPARE(sent, QByteArray("\033[?3u"));
+    sent.clear();
+
+    emu.receiveData("\033[<u", 4); // pop → 回到 1
+    emu.receiveData("\033[?u", 4);
+    QCOMPARE(sent, QByteArray("\033[?1u"));
+    sent.clear();
+
+    emu.receiveData("\033[<5u", 5); // 弹空：flags 复位 0
+    emu.receiveData("\033[?u", 4);
+    QCOMPARE(sent, QByteArray("\033[?0u"));
+}
+
+/**
+ * @brief kitty 协商：CSI = flags ; mode u 三种应用方式。
+ */
+void TestEmulation::testKittySetModes()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    QByteArray sent;
+    QObject::connect(&emu, &Emulation::sendData,
+                     [&](const char *d, int len) { sent.append(d, len); });
+
+    emu.receiveData("\033[=1;1u", 7); // mode 1 整体设置 → 1
+    emu.receiveData("\033[?u", 4);
+    QCOMPARE(sent, QByteArray("\033[?1u"));
+    sent.clear();
+
+    emu.receiveData("\033[=2;2u", 7); // mode 2 置位 → 3
+    emu.receiveData("\033[?u", 4);
+    QCOMPARE(sent, QByteArray("\033[?3u"));
+    sent.clear();
+
+    emu.receiveData("\033[=1;3u", 7); // mode 3 复位指定位 → 2
+    emu.receiveData("\033[?u", 4);
+    QCOMPARE(sent, QByteArray("\033[?2u"));
+    sent.clear();
+
+    emu.receiveData("\033[=3u", 5); // mode 省略默认 1 → 3
+    emu.receiveData("\033[?u", 4);
+    QCOMPARE(sent, QByteArray("\033[?3u"));
+}
+
+/**
+ * @brief kitty flags 栈深度上限 64：第 65 次压栈被拒绝，不影响已有栈内容。
+ */
+void TestEmulation::testKittyStackLimit()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    QByteArray sent;
+    QObject::connect(&emu, &Emulation::sendData,
+                     [&](const char *d, int len) { sent.append(d, len); });
+
+    QTest::ignoreMessage(QtWarningMsg,
+                         "Vt102Emulation: kitty keyboard flags stack full, push rejected");
+    for (int i = 0; i < 65; i++)
+        emu.receiveData("\033[>1u", 5); // 第 65 次压栈被拒
+
+    emu.receiveData("\033[<64u", 6); // 弹出全部 64 层
+    emu.receiveData("\033[?u", 4);
+    // 若第 65 次未被拒绝，此处会残留 flags=1
+    QCOMPARE(sent, QByteArray("\033[?0u"));
+}
+
+/**
+ * @brief kitty 非法参数序列：按未知 CSI 忽略，不影响后续解析。
+ */
+void TestEmulation::testKittyInvalidSequenceIgnored()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    QByteArray sent;
+    QObject::connect(&emu, &Emulation::sendData,
+                     [&](const char *d, int len) { sent.append(d, len); });
+
+    emu.receiveData("\033[=1;1u", 7);
+    emu.receiveData("\033[=2;99u", 8); // 非法 mode：忽略
+    emu.receiveData("\033[?u", 4);
+    QCOMPARE(sent, QByteArray("\033[?1u")); // flags 未被破坏
+
+    emu.receiveData("ok", 2); // 解析器恢复正常
+    QVERIFY(firstLineText(emu, 80).startsWith(QStringLiteral("ok")));
 }
 
 QTEST_GUILESS_MAIN(TestEmulation)

@@ -28,6 +28,7 @@
 #include <QKeyEvent>
 #include <QHash>
 #include <QTimer>
+#include <QVector>
 
 #include "Emulation.h"
 #include "Screen.h"
@@ -164,6 +165,20 @@ private:
 
   void processToken(int code, char32_t p, int q);
   void processOSC();
+
+  // kitty 键盘协议（级别 1+2）协商状态
+  // 注：kitty 规范要求主/备屏独立 flags 栈；本轮按规格实现单栈，
+  //     实际应用（neovim 等）push/pop 配对使用，行为一致
+  static constexpr quint32 KITTY_FLAGS_SUPPORTED = 0b11; // 仅实现消歧义（1）与事件类型（2）
+  static constexpr int KITTY_FLAGS_STACK_MAX = 64; // flags 栈深度上限，防恶意输入撑爆内存
+  quint32 _kittyFlags = 0;               // 当前生效 flags（默认全关，纯应用协商）
+  QVector<quint32> _kittyFlagsStack;     // CSI > u 压入的历史 flags
+
+  void kittyFlagsPush(quint32 flags);
+  void kittyFlagsPop(int count);
+  void kittyFlagsSet(quint32 flags, int mode);
+  void reportKittyKeyboardFlags();
+  bool encodeKittyKeyEvent(QKeyEvent *event, QByteArray &out);
   void processWindowAttributeChange(int attributeToChange, QString newValue);
   void requestWindowAttribute(int);
 
