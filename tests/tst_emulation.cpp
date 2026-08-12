@@ -14,6 +14,7 @@ private slots:
     void testCsiCursorMove();
     void testWideChar();
     void testEmojiSurrogatePair();
+    void testOversizedToken();
 };
 
 /**
@@ -76,6 +77,25 @@ void TestEmulation::testEmojiSurrogatePair()
     const char32_t emoji = U'😀';
     QVERIFY(line.contains(QString::fromUcs4(&emoji, 1)));
     QCOMPARE(line.indexOf(QLatin1Char('b')), 3);
+}
+
+/**
+ * @brief 超长 OSC token：解析器应丢弃该序列并恢复，不崩溃不越界。
+ * @note 超长窗口标题等场景曾导致 tokenBuffer 静默截断，产生错误语义。
+ */
+void TestEmulation::testOversizedToken()
+{
+    Vt102Emulation emu;
+    emu.setImageSize(24, 80);
+    // 超长 OSC 标题（超过 MAX_TOKEN_LENGTH=100000）：解析器应丢弃该序列并恢复，不崩溃
+    QByteArray payload = "\033]0;";
+    payload.append(QByteArray(100005, 'A'));
+    payload.append('\007');
+    QTest::ignoreMessage(QtWarningMsg, "Vt102Emulation: token exceeds MAX_TOKEN_LENGTH, sequence discarded");
+    emu.receiveData(payload.constData(), payload.size());
+    // 恢复验证：后续正常文本仍可正确显示
+    emu.receiveData("OK", 2);
+    QVERIFY(firstLineText(emu, 80).startsWith(QStringLiteral("OK")));
 }
 
 QTEST_GUILESS_MAIN(TestEmulation)

@@ -3,6 +3,7 @@ set(QTERMWIDGET_TESTS
     tst_charwidth
     tst_emulation
     tst_osc52
+    tst_history
 )
 
 foreach(test_name IN LISTS QTERMWIDGET_TESTS)

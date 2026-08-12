@@ -148,6 +148,11 @@ private:
   int argc;
   void initTokenizer();
   int prevCC;
+  /**
+   * @brief 超长 token 丢弃标志：true 时吞吃后续字节直至序列终止符（BEL 或 ST）。
+   * @note 由 addToCurrentToken() 溢出时置位，防止残余字节被当作新序列解析。
+   */
+  bool tokenDiscard = false;
 
   // Set of flags for each of the ASCII characters which indicates
   // what category they fall into (printable character, control, digit etc.)

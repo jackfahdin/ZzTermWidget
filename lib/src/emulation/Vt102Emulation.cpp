@@ -171,8 +171,14 @@ void Vt102Emulation::addArgument() {
 }
 
 void Vt102Emulation::addToCurrentToken(char32_t cc) {
-    tokenBuffer[tokenBufferPos] = cc;
-    tokenBufferPos = qMin(tokenBufferPos + 1, MAX_TOKEN_LENGTH - 1);
+    if (tokenBufferPos >= MAX_TOKEN_LENGTH - 1) {
+        // token 超长（如超长窗口标题）：丢弃整个序列并复位解析器，避免静默截断产生错误语义
+        qWarning("Vt102Emulation: token exceeds MAX_TOKEN_LENGTH, sequence discarded");
+        resetTokenizer();
+        tokenDiscard = true; // 吞吃本序列的剩余字节，直至终止符
+        return;
+    }
+    tokenBuffer[tokenBufferPos++] = cc;
 }
 
 // Character Class flags used while decoding
@@ -255,6 +261,17 @@ void Vt102Emulation::receiveChar(char32_t cc) {
     if (cc == DEL)
         return; // VT100: ignore.
 
+    // 丢弃模式：吞吃超长序列的剩余字节，直至终止符（OSC 的 BEL 或通用的 ST）
+    if (tokenDiscard) {
+        const bool terminated = (cc == 7) || (prevCC == ESC && cc == '\\');
+        prevCC = cc;
+        if (terminated) {
+            tokenDiscard = false;
+            resetTokenizer();
+        }
+        return;
+    }
+
     if (ces(CTL)) {
         // ignore control characters in the text part of Cse escape sequences, aka: OSC "ESC]", DCS
         // "ESCP", APC "ESC_", SOS "ESCX", and PM  "ESC^".
@@ -277,6 +294,8 @@ void Vt102Emulation::receiveChar(char32_t cc) {
     }
     // advance the state
     addToCurrentToken(cc);
+    if (tokenDiscard)
+        return; // 刚触发超长丢弃，当前字节已被吞吃，不再参与状态推导
 
     char32_t *s = tokenBuffer;
     int p = tokenBufferPos;

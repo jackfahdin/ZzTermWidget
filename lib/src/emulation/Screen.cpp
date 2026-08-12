@@ -28,6 +28,7 @@
 
 #include <QDate>
 #include <QTextStream>
+#include <QVarLengthArray>
 
 #include "CharWidth.h"
 #include "TerminalCharacterDecoder.h"
@@ -1232,14 +1233,9 @@ int Screen::copyLineToStream(int line, int start, int count,
                             TerminalCharacterDecoder *decoder,
                             bool appendNewLine,
                             bool preserveLineBreaks) const {
-    // buffer to hold characters for decoding
-    // the buffer is static to avoid initialising every
-    // element on each call to copyLineToStream
-    //(which is unnecessary since all elements will be overwritten anyway)
-    static const int MAX_CHARS = 1024;
-    static Character characterBuffer[MAX_CHARS];
-
-    Q_ASSERT(count < MAX_CHARS);
+    // 行字符缓冲：栈上小容量、超出自动堆分配（替代原静态 1024 上限，消除线程安全与越界隐患）
+    const int worstCase = qMax(columns, line < history->getLines() ? history->getLineLen(line) : 0) + 1;
+    QVarLengthArray<Character> characterBuffer(worstCase);
 
     LineProperty currentLineProperties = 0;
 
@@ -1264,7 +1260,7 @@ int Screen::copyLineToStream(int line, int start, int count,
         Q_ASSERT(count >= 0);
         Q_ASSERT((start + count) <= history->getLineLen(line));
 
-        history->getCells(line, start, count, characterBuffer);
+        history->getCells(line, start, count, characterBuffer.data());
 
         if (history->isWrappedLine(line))
             currentLineProperties |= LINE_WRAPPED;
@@ -1295,13 +1291,13 @@ int Screen::copyLineToStream(int line, int start, int count,
     const bool omitLineBreak =
             (currentLineProperties & LINE_WRAPPED) || !preserveLineBreaks;
 
-    if (!omitLineBreak && appendNewLine && (count + 1 < MAX_CHARS)) {
+    if (!omitLineBreak && appendNewLine && (count + 1 < worstCase)) {
         characterBuffer[count] = '\n';
         count++;
     }
 
     // decode line and write to text stream
-    decoder->decodeLine((Character *)characterBuffer, count,
+    decoder->decodeLine(characterBuffer.data(), count,
                                             currentLineProperties);
 
     return count;
