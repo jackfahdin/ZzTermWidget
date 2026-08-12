@@ -5,6 +5,7 @@ set(QTERMWIDGET_TESTS
     tst_osc52
     tst_history
     tst_protocols
+    tst_benchmark
 )
 
 foreach(test_name IN LISTS QTERMWIDGET_TESTS)
