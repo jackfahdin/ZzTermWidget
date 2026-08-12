@@ -1,3 +1,9 @@
+ZzQTermWidget 协议三件套 / 2026-08-12
+===============================
+ * OSC 8 显式超链接：应用标注的真链接可 Ctrl+点击打开、右键复制地址，优先于正则 URL 匹配。
+ * 同步输出 CSI ? 2026：TUI 应用批量重绘期间攒帧防闪屏，1000ms 超时与键盘输入兜底强制 flush。
+ * Kitty 键盘协议级别 1+2：消歧义转义码（Ctrl+I 与 Tab 分离等）与按键重复/释放事件上报。
+
 qtermwidget-1.4.0 / 2023-11-05
 ===============================
  * TERM env variable is set to xterm-256color when not set with QTermWidget::setEnvironment().
