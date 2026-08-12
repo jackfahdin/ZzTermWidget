@@ -28,7 +28,9 @@
 #include <QDrag>
 #include <QEvent>
 #include <QFile>
+#include <QFontMetrics>
 #include <QGridLayout>
+#include <QHash>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLayout>
