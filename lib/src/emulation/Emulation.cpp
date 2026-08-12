@@ -179,32 +179,6 @@ QString Emulation::keyBindings() const {
     return _keyTranslator->name(); 
 }
 
-// process application unicode input to terminal
-// this is a trivial scanner
-void Emulation::receiveChar(char32_t c) {
-    c &= 0xff;
-    switch (c) {
-        case '\b':
-            _currentScreen->backspace();
-            break;
-        case '\t':
-            _currentScreen->tab();
-            break;
-        case '\n':
-            _currentScreen->newLine();
-            break;
-        case '\r':
-            _currentScreen->toStartOfLine();
-            break;
-        case 0x07:
-            emit stateSet(NOTIFYBELL);
-            break;
-        default:
-            _currentScreen->displayCharacter(c);
-            break;
-    };
-}
-
 void Emulation::sendKeyEvent(QKeyEvent *ev, bool) {
     emit stateSet(NOTIFYNORMAL);
 

@@ -121,6 +121,12 @@ public:
      * @see Emulation::setOsc52Enabled
      */
     void setOsc52Enabled(bool enabled);
+
+    /**
+     * @brief 查询当前是否允许 OSC 52 序列访问本地剪贴板。
+     * @return true 表示允许（默认）；false 表示已关闭。
+     * @see setOsc52Enabled()
+     */
     bool osc52Enabled() const;
 
     // Presence of scrollbar

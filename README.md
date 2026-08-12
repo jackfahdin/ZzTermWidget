@@ -21,7 +21,7 @@
 - 修复静态库 res.qrc 资源被链接器剥离导致配色方案不可用的问题。
 - 升级 vendored utf8proc 至 2.11.3（Unicode 17 数据）。
 - 字符管线升级为 char32_t，修复 BMP 外字符（emoji 等）代理对拆分问题。
-- 增加 OSC 52 剪贴板读写开关（默认关闭，可按需开启）。
+- 增加 OSC 52 剪贴板读写开关（默认允许，保持现有行为兼容）。注意：允许时远程程序可写本地剪贴板，有安全风险，上层应用可用 `setOsc52Enabled(false)` 关闭。
 - 屏幕缓冲区安全修复（越界访问防护）。
 - 修复 Emulation 默认解码器未初始化的问题。
 
@@ -71,6 +71,7 @@ target_link_libraries(your_target PRIVATE ZzQTermWidget::qtermwidget)
 一些注意：
 
 - 原始项目使用 CMake 构建，本项目同样使用 CMake 构建（顶层 `CMakeLists.txt`、`lib/CMakeLists.txt`、`lib/third_party/ptyqt/CMakeLists.txt`）。
+- 内部头文件（Emulation/Screen/TerminalDisplay 等，安装时会被平铺导出）的字符管线签名已由 wchar_t 迁移至 char32_t、rendition 由 quint8 扩展至 quint16，直接使用这些内部头的下游项目需同步适配。
 - 在Qt6.11.1上测试通过。
 - 本项目完全遵守原始项目的LICENSE，修改新增的代码也遵守原始项目的LICENSE。
 

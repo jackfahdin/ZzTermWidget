@@ -201,6 +201,12 @@ public:
      * @note 允许时远程程序可读写本地剪贴板，有安全风险，上层应用可按需关闭。
      */
     void setOsc52Enabled(bool enabled);
+
+    /**
+     * @brief 查询当前是否允许 OSC 52 序列访问本地剪贴板。
+     * @return true 表示允许（默认）；false 表示已关闭。
+     * @see setOsc52Enabled()
+     */
     bool osc52Enabled() const;
 
     /** TODO Document me */
@@ -465,8 +471,11 @@ protected:
     /**
      * Processes an incoming character.  See receiveData()
      * @p ch A unicode character code.
+     *
+     * @note 纯虚接口：基类不提供默认实现（历史上的默认实现仅处理 8 位字符，
+     *       在 char32_t 字符管线下语义错误），子类必须自行实现。
      */
-    virtual void receiveChar(char32_t ch);
+    virtual void receiveChar(char32_t ch) = 0;
 
     /**
      * Sets the active screen.  The terminal has two screens, primary and alternate.

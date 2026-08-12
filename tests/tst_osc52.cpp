@@ -17,7 +17,7 @@ private slots:
 void TestOsc52::testDisabledBySwitch()
 {
     Vt102Emulation emu;
-    // 默认构造的 QStringDecoder 无效，须显式 setCodec（同 tst_emulation 的约定）
+    // 显式 setCodec 与真实应用路径一致（同 tst_emulation 的约定）
     emu.setCodec(QStringEncoder(QStringConverter::Utf8));
     emu.setImageSize(24, 80);
     emu.setOsc52Enabled(false);
@@ -30,7 +30,7 @@ void TestOsc52::testDisabledBySwitch()
 void TestOsc52::testEnabledByDefault()
 {
     Vt102Emulation emu;
-    // 默认构造的 QStringDecoder 无效，须显式 setCodec（同 tst_emulation 的约定）
+    // 显式 setCodec 与真实应用路径一致（同 tst_emulation 的约定）
     emu.setCodec(QStringEncoder(QStringConverter::Utf8));
     emu.setImageSize(24, 80);
     QApplication::clipboard()->clear();

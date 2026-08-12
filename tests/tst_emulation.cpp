@@ -31,7 +31,7 @@ static QString firstLineText(Vt102Emulation &emu, int columns)
 
 /**
  * @brief 为仿真器设置 UTF-8 解码器与屏幕尺寸。
- * @note 默认构造的 QStringDecoder 无效，必须显式 setCodec（与真实应用一致）。
+ * @note 显式 setCodec 与真实应用路径一致（默认解码器虽已为 UTF-8，仍保持显式设置）。
  */
 static void initEmu(Vt102Emulation &emu, int lines, int columns)
 {
