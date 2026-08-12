@@ -104,6 +104,7 @@ QTermWidget::QTermWidget(QWidget *msgParent, QWidget *parent)
     m_terminalDisplay->setUsesMouse(m_emulation->programUsesMouse());
     connect(m_emulation, &Emulation::programBracketedPasteModeChanged, m_terminalDisplay, &TerminalDisplay::setBracketedPasteMode);
     m_terminalDisplay->setBracketedPasteMode(m_emulation->programBracketedPasteMode());
+    connect(m_emulation, &Emulation::synchronizedOutputModeChanged, m_terminalDisplay, &TerminalDisplay::setSynchronizedOutputMode);
     m_terminalDisplay->setScreenWindow(m_emulation->createWindow());
     connect(m_emulation, &Emulation::primaryScreenInUse, m_terminalDisplay, &TerminalDisplay::usingPrimaryScreen);
     connect(m_emulation, &Emulation::imageSizeChanged, this, [this](int /*height*/, int /*width*/){

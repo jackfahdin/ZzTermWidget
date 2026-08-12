@@ -1543,6 +1543,15 @@ void Vt102Emulation::processToken(int token, char32_t p, int q) {
         restoreMode(MODE_BracketedPaste);
         break; // XTERM
 
+    case TY_CSI_PR('h', 2026):
+        if (!getMode(MODE_SynchronizedOutput))
+            setMode(MODE_SynchronizedOutput); // 幂等：嵌套 set 不重复发信号
+        break; // BSU：开始批量更新
+    case TY_CSI_PR('l', 2026):
+        if (getMode(MODE_SynchronizedOutput))
+            resetMode(MODE_SynchronizedOutput);
+        break; // ESU：结束批量更新
+
     // FIXME: weird DEC reset sequence
     case TY_CSI_PE('p'): /* IGNORED: reset         (        ) */
         break;
@@ -1578,6 +1587,7 @@ void Vt102Emulation::processToken(int token, char32_t p, int q) {
     case TY_CSI_PR('p', 1047) : reportDecMode(1047, getMode(MODE_AppScreen) ? 1 : 2);          break; // Alt screen (xterm)
     case TY_CSI_PR('p', 1049) : reportDecMode(1049, getMode(MODE_AppScreen) ? 1 : 2);          break; // Alt screen + cursor
     case TY_CSI_PR('p', 2004) : reportDecMode(2004, getMode(MODE_BracketedPaste) ? 1 : 2);     break; // Bracketed paste
+    case TY_CSI_PR('p', 2026) : reportDecMode(2026, getMode(MODE_SynchronizedOutput) ? 1 : 2); break; // Synchronized output
 
     // FIXME: when changing between vt52 and ansi mode evtl do some resetting.
     case TY_VT52('A'):
@@ -2094,6 +2104,8 @@ void Vt102Emulation::resetModes() {
     saveMode(MODE_Mouse1015);
     resetMode(MODE_BracketedPaste);
     saveMode(MODE_BracketedPaste);
+    resetMode(MODE_SynchronizedOutput);
+    saveMode(MODE_SynchronizedOutput);
 
     resetMode(MODE_AppScreen);
     saveMode(MODE_AppScreen);
@@ -2125,6 +2137,10 @@ void Vt102Emulation::setMode(int m) {
         emit programBracketedPasteModeChanged(true);
         break;
 
+    case MODE_SynchronizedOutput:
+        emit synchronizedOutputModeChanged(true);
+        break;
+
     case MODE_AppScreen:
         _screen[1]->clearSelection();
         setScreen(1);
@@ -2152,6 +2168,10 @@ void Vt102Emulation::resetMode(int m) {
 
     case MODE_BracketedPaste:
         emit programBracketedPasteModeChanged(false);
+        break;
+
+    case MODE_SynchronizedOutput:
+        emit synchronizedOutputModeChanged(false);
         break;
 
     case MODE_AppScreen:

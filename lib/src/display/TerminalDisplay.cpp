@@ -391,6 +391,16 @@ TerminalDisplay::TerminalDisplay(QWidget *parent)
     connect(_blinkCursorTimer, &QTimer::timeout, this,
                     &TerminalDisplay::blinkCursorEvent);
 
+    // 同步输出兜底定时器：模式持续过久（如应用崩溃未发 ESU）时强制 flush
+    _syncOutputTimer = new QTimer(this);
+    _syncOutputTimer->setSingleShot(true);
+    _syncOutputTimer->setInterval(1000);
+    connect(_syncOutputTimer, &QTimer::timeout, this, [this]() {
+        flushSynchronizedOutput();
+        if (_syncOutputActive)
+            _syncOutputTimer->start(); // 模式仍未复位：继续下一轮兜底
+    });
+
     setUsesMouse(true);
     setBracketedPasteMode(false);
     setColorTable(base_color_table);
@@ -1303,6 +1313,12 @@ void TerminalDisplay::processFilters() {
 void TerminalDisplay::updateImage() {
     if (!_screenWindow)
         return;
+
+    // 同步输出模式：输入照常解析进 Screen，此处仅攒帧不刷；复位/超时/键盘输入时一次性补刷
+    if (_syncOutputActive) {
+        _syncUpdatePending = true;
+        return;
+    }
 
     // optimization - scroll the existing image where possible and
     // avoid expensive text drawing for parts of the image that
@@ -3179,6 +3195,29 @@ void TerminalDisplay::setBracketedPasteMode(bool on) {
 }
 bool TerminalDisplay::bracketedPasteMode() const { return _bracketedPasteMode; }
 
+void TerminalDisplay::setSynchronizedOutputMode(bool enabled) {
+    if (_syncOutputActive == enabled)
+        return; // 嵌套 set 幂等
+    _syncOutputActive = enabled;
+    if (enabled) {
+        _syncOutputTimer->start();
+    } else {
+        _syncOutputTimer->stop();
+        flushSynchronizedOutput();
+    }
+}
+
+void TerminalDisplay::flushSynchronizedOutput() {
+    if (!_syncUpdatePending)
+        return;
+    _syncUpdatePending = false;
+    // 临时解除攒帧守卫：否则 updateImage 会因模式仍生效而重新挂起，补刷永远不会发生
+    const bool wasActive = _syncOutputActive;
+    _syncOutputActive = false;
+    updateImage();
+    _syncOutputActive = wasActive;
+}
+
 #undef KeyPress
 
 void TerminalDisplay::emitSelection(bool useXselection, bool appendReturn) {
@@ -3312,6 +3351,10 @@ int TerminalDisplay::motionAfterPasting() { return mMotionAfterPasting; }
 void TerminalDisplay::keyPressEvent(QKeyEvent *event) {
     _actSel = 0; // Key stroke implies a screen update, so TerminalDisplay won't
                  // know where the current selection is.
+
+    // 同步输出兜底：用户键盘输入说明交互在进行，立即补刷避免画面停滞
+    if (_syncOutputActive)
+        flushSynchronizedOutput();
 
     if (_hasBlinkingCursor) {
         // see TerminalDisplay::setBlinkingCursor

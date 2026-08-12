@@ -24,6 +24,7 @@ private slots:
     void testOsc8ClearLineDropsSegments();
     void testOsc8StTerminator();
     void testOsc8ClearLineResetsCurrentLink();
+    void testSyncOutputModeSignalAndDecrqm();
 };
 
 /**
@@ -240,6 +241,37 @@ void TestEmulation::testOsc8ClearLineResetsCurrentLink()
     const char *seq2 = "\033]8;;https://a.com\007ef";
     emu.receiveData(seq2, int(std::strlen(seq2)));
     QCOMPARE(scr->hyperlinkAt(0, 4), QStringLiteral("https://a.com"));
+}
+
+/**
+ * @brief CSI ? 2026 同步输出：set/reset 信号、嵌套 set 幂等、DECRQM 如实应答。
+ */
+void TestEmulation::testSyncOutputModeSignalAndDecrqm()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    QSignalSpy spy(&emu, &Emulation::synchronizedOutputModeChanged);
+    QByteArray sent;
+    QObject::connect(&emu, &Emulation::sendData,
+                     [&](const char *d, int len) { sent.append(d, len); });
+
+    emu.receiveData("\033[?2026h", 8); // BSU
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.takeFirst().at(0).toBool(), true);
+
+    emu.receiveData("\033[?2026h", 8); // 嵌套 set 幂等：不再发信号
+    QCOMPARE(spy.count(), 0);
+
+    emu.receiveData("\033[?2026$p", 9); // DECRQM：置位应答 1（set）
+    QCOMPARE(sent, QByteArray("\033[?2026;1$y"));
+    sent.clear();
+
+    emu.receiveData("\033[?2026l", 8); // ESU
+    QCOMPARE(spy.count(), 1);
+    QCOMPARE(spy.takeFirst().at(0).toBool(), false);
+
+    emu.receiveData("\033[?2026$p", 9); // DECRQM：复位应答 2（reset）
+    QCOMPARE(sent, QByteArray("\033[?2026;2$y"));
 }
 
 QTEST_GUILESS_MAIN(TestEmulation)

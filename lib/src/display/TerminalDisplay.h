@@ -535,6 +535,17 @@ public slots:
     bool bracketedPasteMode() const;
 
     /**
+     * @brief 设置同步输出模式（CSI ? 2026）。
+     * @param enabled true 时挂起屏幕重绘仅攒帧；false 时立即补刷一帧。
+     * @note 安全兜底：模式持续超过 1000ms 或收到键盘输入时强制 flush，防应用崩溃锁黑屏。
+     */
+    void setSynchronizedOutputMode(bool enabled);
+    /** @brief 查询同步输出模式是否生效（主要供测试与调试）。 */
+    bool synchronizedOutputActive() const { return _syncOutputActive; }
+    /** @brief 查询是否存在被攒帧推迟的重绘（主要供测试与调试）。 */
+    bool synchronizedOutputPending() const { return _syncUpdatePending; }
+
+    /**
      * Shows a notification that a bell event has occurred in the terminal.
      * TODO: More documentation here
      */
@@ -702,6 +713,9 @@ private slots:
 
 private:
     // -- Drawing helpers --
+
+    /** @brief 同步输出攒帧期间存在被推迟的重绘时，立即补刷一帧。 */
+    void flushSynchronizedOutput();
 
     // determine the width of this text
     int textWidth(int startColumn, int length, int line) const;
@@ -945,6 +959,11 @@ private:
     // 命中同一单元格时 OSC 8 链接优先于正则匹配链接
     Osc8Filter *_osc8Filter;
     QRegion _mouseOverHotspotArea;
+
+    // 同步输出（CSI ? 2026）攒帧状态
+    bool _syncOutputActive = false;
+    bool _syncUpdatePending = false;
+    QTimer *_syncOutputTimer = nullptr;
 
     QTermWidget::KeyboardCursorShape _cursorShape;
 

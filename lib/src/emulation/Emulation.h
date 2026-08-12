@@ -360,6 +360,12 @@ signals:
     void programBracketedPasteModeChanged(bool bracketedPasteMode);
 
     /**
+     * @brief 终端程序通过 CSI ? 2026 h/l 切换同步输出（批量重绘）模式时发出。
+     * @param enabled true = 开始攒帧（BSU）；false = 结束并一次性重绘（ESU）。
+     */
+    void synchronizedOutputModeChanged(bool enabled);
+
+    /**
      * Emitted when the contents of the screen image change.
      * The emulation buffers the updates from successive image changes,
      * and only emits outputChanged() at sensible intervals when
