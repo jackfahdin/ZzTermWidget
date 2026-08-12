@@ -39,6 +39,8 @@
 
 Emulation::Emulation()
     : _currentScreen(nullptr)
+    // 默认解码器初始化为 UTF-8，避免未调 setCodec 时输出乱码（对齐上游）
+    , _toUtf16(QStringConverter::Utf8)
     , _keyTranslator(nullptr)
     , _enableHandleCtrlC(false)
     , _usesMouse(false)
