@@ -22,6 +22,7 @@ endif()
 include(GNUInstallDirs)
 
 option(ZZQTERMWIDGET_BUILD_EXAMPLE "Build the example terminal application" ON)
+option(ZZQTERMWIDGET_BUILD_TESTS "Build the QTest-based test suite" ON)
 option(ZZQTERMWIDGET_INSTALL "Generate install rules for ZzQTermWidget" ON)
 
 # The ptyqt subdirectory exposes its own install switch; keep it in sync.
@@ -40,6 +41,11 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS
 # LinguistTools 可选：无 linguist 的环境跳过翻译编译（见 lib/CMakeLists.txt 的 guard）
 find_package(Qt${QT_VERSION_MAJOR} QUIET COMPONENTS LinguistTools)
 
+if(ZZQTERMWIDGET_BUILD_TESTS)
+    find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Test)
+    enable_testing()
+endif()
+
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
@@ -49,4 +55,8 @@ add_subdirectory(lib)
 if(ZZQTERMWIDGET_BUILD_EXAMPLE)
     add_executable(qtermwidget_example example/main.cpp)
     target_link_libraries(qtermwidget_example PRIVATE ZzQTermWidget::qtermwidget)
+endif()
+
+if(ZZQTERMWIDGET_BUILD_TESTS)
+    add_subdirectory(tests)
 endif()
