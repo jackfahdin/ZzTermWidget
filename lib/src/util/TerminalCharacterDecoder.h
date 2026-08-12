@@ -136,7 +136,7 @@ private:
     QTextStream* _output;
     const ColorEntry* _colorTable;
     bool _innerSpanOpen;
-    quint8 _lastRendition;
+    quint16 _lastRendition;
     CharacterColor _lastForeColor;
     CharacterColor _lastBackColor;
 };

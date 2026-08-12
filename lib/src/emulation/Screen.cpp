@@ -590,11 +590,11 @@ void Screen::checkSelection(int from, int to) {
         clearSelection();
 }
 
-static inline bool isRegionalIndicator(wchar_t c) {
+static inline bool isRegionalIndicator(char32_t c) {
     return (c >= 0x1F1E6 && c <= 0x1F1FF); // for creating flag codes
 }
 
-void Screen::displayCharacter(wchar_t c) {
+void Screen::displayCharacter(char32_t c) {
     // Note that VT100 does wrapping BEFORE putting the character.
     // This has impact on the assumption of valid cursor positions.
     // We indicate the fact that a newline has to be triggered by
@@ -863,11 +863,22 @@ QString Screen::getScreenText(int row1, int col1, int row2, int col2, int mode) 
         for (int i = startLine; i <= endLine; i++) {
             if (screenLines->size() <= i)
                 break;
+            char32_t prevChar = 0;
             for (int j = startCol; j <= endCol; j++) {
                 if (screenLines[i].count() <= j)
                     break;
-                wchar_t c = screenLines[i][j].character;
-                text += QChar(c);
+                // 以 UCS-4 码点追加：BMP 外字符（如 emoji）在此还原为代理对
+                char32_t c = screenLines[i][j].character;
+                if (c == 0) {
+                    // 宽字符的占位单元格：前导字符为 BMP（仅占 1 个 UTF-16 单元）时
+                    // 补一个 NUL 保持文本索引与列对齐；前导字符为 BMP 外字符时
+                    // 其代理对已占 2 个 UTF-16 单元，占位跳过
+                    if (prevChar <= 0xFFFF)
+                        text += QChar(0);
+                    continue;
+                }
+                text += QString::fromUcs4(&c, 1);
+                prevChar = c;
             }
         }
     } else if (mode == 2) {
@@ -875,11 +886,20 @@ QString Screen::getScreenText(int row1, int col1, int row2, int col2, int mode) 
             if (screenLines->size() <= i)
                 break;
             int size = 0;
+            char32_t prevChar = 0;
             for (int j = startCol; j <= endCol; j++) {
                 if (screenLines[i].count() <= j)
                     break;
-                wchar_t c = screenLines[i][j].character;
-                text += QChar(c);
+                // 以 UCS-4 码点追加：BMP 外字符（如 emoji）在此还原为代理对；
+                // 宽字符占位单元格的处理同 mode 1
+                char32_t c = screenLines[i][j].character;
+                if (c == 0) {
+                    if (prevChar <= 0xFFFF)
+                        text += QChar(0);
+                    continue;
+                }
+                text += QString::fromUcs4(&c, 1);
+                prevChar = c;
                 size++;
             }
             if (size != 0) {

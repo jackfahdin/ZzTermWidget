@@ -23,6 +23,7 @@
 #define EMULATION_H
 
 #include <cstdio>
+#include <vector>
 
 #include <QKeyEvent>
 #include <QStringDecoder>
@@ -276,7 +277,7 @@ public slots:
      */
     void receiveData(const char* buffer,int len);
 
-    void dupDisplayCharacter(wchar_t cc);
+    void dupDisplayCharacter(char32_t cc);
 
 signals:
 
@@ -457,7 +458,7 @@ protected:
      * Processes an incoming character.  See receiveData()
      * @p ch A unicode character code.
      */
-    virtual void receiveChar(wchar_t ch);
+    virtual void receiveChar(char32_t ch);
 
     /**
      * Sets the active screen.  The terminal has two screens, primary and alternate.
@@ -520,7 +521,7 @@ private:
     QTimer _bulkTimer1{this};
     QTimer _bulkTimer2{this};
     QStringEncoder _fromUtf8;
-    QByteArray dupCache;
+    std::vector<char32_t> dupCache;
 };
 
 #endif // EMULATION_H

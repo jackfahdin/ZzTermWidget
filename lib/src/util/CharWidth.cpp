@@ -13,7 +13,7 @@ void CharWidth::setFont(QFont font) {
     fm = new QFontMetrics(font);
 }
 
-int CharWidth::font_width(wchar_t ucs) {
+int CharWidth::font_width(char32_t ucs) {
     uint64_t ucode = ucs;
     if(ucode <= 0xffff)
         return fm->horizontalAdvance(QString(QChar(ucs)),1)/fm->horizontalAdvance("0",1);
@@ -25,7 +25,7 @@ int CharWidth::font_width(const QChar & c) {
     return fm->horizontalAdvance(c,1)/fm->horizontalAdvance("0",1);
 }
 
-int CharWidth::string_font_width( const std::wstring & wstr ) {
+int CharWidth::string_font_width( const std::u32string & wstr ) {
     int width = 0;
     for (auto & c : wstr) {
         width += font_width(c);
@@ -41,7 +41,7 @@ int CharWidth::string_font_width( const QString & str ) {
     return width;
 }
 
-int CharWidth::unicode_width(wchar_t ucs, bool fix_width) {
+int CharWidth::unicode_width(char32_t ucs, bool fix_width) {
     utf8proc_category_t cat = utf8proc_category( ucs );
     if (cat == UTF8PROC_CATEGORY_CO) {
         // Co: Private use area. libutf8proc makes them zero width, while tmux
@@ -62,7 +62,7 @@ int CharWidth::unicode_width(const QChar & c, bool fix_width) {
     return unicode_width(c.unicode(),fix_width);
 }
 
-int CharWidth::string_unicode_width(const std::wstring & wstr, bool fix_width) {
+int CharWidth::string_unicode_width(const std::u32string & wstr, bool fix_width) {
     int width = 0;
     for (auto & c : wstr) {
         width += unicode_width(c,fix_width);

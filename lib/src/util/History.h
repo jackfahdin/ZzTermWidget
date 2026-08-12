@@ -210,7 +210,7 @@ public:
 
     CharacterColor fgColor, bgColor;
     quint16 startPos;
-    quint8 rendition;
+    quint16 rendition;
 };
 
 class HistoryType

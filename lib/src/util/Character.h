@@ -59,32 +59,33 @@ class Character
 {
 public:
     /**
-     * Constructs a new character.
+     * @brief 构造一个新的终端字符。
      *
-     * @param _c The unicode character value of this character.
-     * @param _f The foreground color used to draw the character.
-     * @param _b The color used to draw the character's background.
-     * @param _r A set of rendition flags which specify how this character is to be drawn.
+     * @param _c 该字符的 Unicode 码点（UCS-4，支持 BMP 外字符）。
+     * @param _f 绘制该字符使用的前景色。
+     * @param _b 绘制该字符背景使用的颜色。
+     * @param _r 一组渲染标志，指定该字符的绘制方式。
      */
-    inline Character(quint16 _c = ' ',
+    inline Character(char32_t _c = U' ',
             CharacterColor  _f = CharacterColor(COLOR_SPACE_DEFAULT,DEFAULT_FORE_COLOR),
             CharacterColor  _b = CharacterColor(COLOR_SPACE_DEFAULT,DEFAULT_BACK_COLOR),
-            quint8  _r = DEFAULT_RENDITION)
+            quint16  _r = DEFAULT_RENDITION)
         : character(_c)
         , rendition(_r)
         , foregroundColor(_f)
         , backgroundColor(_b) {
     }
 
-    /** The unicode character value for this character.
-    *
-    * RE_EXTENDED_CHAR character is a hash code which can be used to look up the unicode
-    * character sequence in the ExtendedCharTable used to create the sequence.
-    */
-    wchar_t character;
+    /**
+     * @brief 该字符的 Unicode 码点。
+     *
+     * 带 RE_EXTENDED_CHAR 标志时，该字段为哈希码，
+     * 可在创建该序列所用的 ExtendedCharTable 中查得原始 Unicode 字符序列。
+     */
+    char32_t character;
 
-    /** A combination of RENDITION flags which specify options for drawing the character. */
-    quint8  rendition;
+    /** @brief RENDITION 渲染标志的组合，指定绘制该字符的选项。 */
+    quint16  rendition;
 
     /** The foreground color used to draw this character. */
     CharacterColor  foregroundColor;
@@ -125,7 +126,7 @@ public:
     }
 
     inline bool isSpace() const {
-        return (rendition & RE_EXTENDED_CHAR) ? false : QChar(character).isSpace();
+        return (rendition & RE_EXTENDED_CHAR) ? false : QChar::isSpace(character);
     }
 };
 

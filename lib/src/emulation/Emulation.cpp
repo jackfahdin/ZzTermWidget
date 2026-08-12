@@ -175,7 +175,7 @@ QString Emulation::keyBindings() const {
 
 // process application unicode input to terminal
 // this is a trivial scanner
-void Emulation::receiveChar(wchar_t c) {
+void Emulation::receiveChar(char32_t c) {
     c &= 0xff;
     switch (c) {
         case '\b':
@@ -227,17 +227,13 @@ void Emulation::receiveData(const char *text, int length) {
 
     bufferedUpdate();
 
-    /* XXX: the following code involves encoding & decoding of "UTF-16
-    * surrogate pairs", which does not work with characters higher than
-    * U+10FFFF
-    * https://unicodebook.readthedocs.io/unicode_encodings.html#surrogates
-    */
-    QString utf16Text = _toUtf16(QByteArray::fromRawData(text, length));
-    std::wstring unicodeText = utf16Text.toStdWString();
+    // 以 UCS-4 码点迭代：代理对在解码出口合成，全平台行为一致
+    const QString utf16Text = _toUtf16(QByteArray::fromRawData(text, length));
+    const auto ucs4Text = utf16Text.toUcs4();
 
     // send characters to terminal emulator
-    for (wchar_t i : unicodeText)
-        receiveChar(i);
+    for (char32_t c : ucs4Text)
+        receiveChar(c);
 
     // look for z-modem indicator
     //-- someone who understands more about z-modems that I do may be able to move
@@ -256,25 +252,25 @@ void Emulation::receiveData(const char *text, int length) {
     }
 }
 
-void Emulation::dupDisplayCharacter(wchar_t cc) {
-    if (cc == L'\n') {
-        dupCache.append(L'\n');
+void Emulation::dupDisplayCharacter(char32_t cc) {
+    if (cc == U'\n') {
+        dupCache.push_back(U'\n');
         PlainTextDecoder decoder;
         QString lineText;
         QTextStream stream(&lineText);
         decoder.begin(&stream);
         Character *data = new Character[dupCache.size()];
-        for (int j = 0; j < dupCache.size(); j++) {
-            data[j] = Character(dupCache.at(j));
+        for (int j = 0; j < static_cast<int>(dupCache.size()); j++) {
+            data[j] = Character(dupCache[j]);
         }
-        decoder.decodeLine(data, dupCache.size(), 0);
+        decoder.decodeLine(data, static_cast<int>(dupCache.size()), 0);
         decoder.end();
         delete[] data;
         emit dupDisplayOutput(lineText.toUtf8().constData(),
                             lineText.toUtf8().length());
         dupCache.clear();
     } else {
-        dupCache.append(cc);
+        dupCache.push_back(cc);
     }
 }
 

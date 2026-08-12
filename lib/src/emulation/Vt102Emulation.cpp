@@ -170,7 +170,7 @@ void Vt102Emulation::addArgument() {
     argv[argc] = 0;
 }
 
-void Vt102Emulation::addToCurrentToken(wchar_t cc) {
+void Vt102Emulation::addToCurrentToken(char32_t cc) {
     tokenBuffer[tokenBufferPos] = cc;
     tokenBufferPos = qMin(tokenBufferPos + 1, MAX_TOKEN_LENGTH - 1);
 }
@@ -249,8 +249,8 @@ void Vt102Emulation::initTokenizer() {
 #define DEL 127
 
 // process an incoming unicode character
-void Vt102Emulation::receiveChar(wchar_t cc) {
-    if ((cc == L'\r') || (cc == L'\n'))
+void Vt102Emulation::receiveChar(char32_t cc) {
+    if ((cc == U'\r') || (cc == U'\n'))
         dupDisplayCharacter(cc);
     if (cc == DEL)
         return; // VT100: ignore.
@@ -278,7 +278,7 @@ void Vt102Emulation::receiveChar(wchar_t cc) {
     // advance the state
     addToCurrentToken(cc);
 
-    wchar_t *s = tokenBuffer;
+    char32_t *s = tokenBuffer;
     int p = tokenBufferPos;
 
     if (getMode(MODE_Ansi)) {
@@ -458,7 +458,6 @@ void Vt102Emulation::receiveChar(wchar_t cc) {
 }
 
 void Vt102Emulation::processOSC() {
-    QString token = QString::fromWCharArray(tokenBuffer, tokenBufferPos);
     int i = 2;
     while (i < tokenBufferPos && tokenBuffer[i] != ';')
         i++;
@@ -470,10 +469,10 @@ void Vt102Emulation::processOSC() {
     int command = -1;
     switch (i - 1) {
     case 2:
-        command = tokenBuffer[2] - L'0';
+        command = tokenBuffer[2] - U'0';
         break;
     case 3:
-        command = 10 * (tokenBuffer[2] - L'0') + (tokenBuffer[3] - L'0');
+        command = 10 * (tokenBuffer[2] - U'0') + (tokenBuffer[3] - U'0');
         break;
     default:
         reportDecodingError();
@@ -493,7 +492,7 @@ void Vt102Emulation::processOSC() {
     case 2:
     case 7: {
         QString newValue =
-                QString::fromWCharArray(tokenBuffer + 3 + 1, tokenBufferPos - 3 - 2);
+                QString::fromUcs4(tokenBuffer + 3 + 1, tokenBufferPos - 3 - 2);
         processWindowAttributeChange(command, newValue);
         break;
     }
@@ -512,7 +511,7 @@ void Vt102Emulation::processOSC() {
          * same protocol.
          */
         QString arg =
-                QString::fromWCharArray(tokenBuffer + 4 + 1, tokenBufferPos - 4 - 2);
+                QString::fromUcs4(tokenBuffer + 4 + 1, tokenBufferPos - 4 - 2);
         QStringList args = arg.split(";", Qt::SkipEmptyParts);
         auto processOSC52Text = [&](QString base64, QClipboard::Mode mode) {
             QClipboard *clipboard = QApplication::clipboard();
@@ -644,7 +643,7 @@ void Vt102Emulation::doTitleChanged(int what, const QString &caption) {
      about this mapping.
 */
 
-void Vt102Emulation::processToken(int token, wchar_t p, int q) {
+void Vt102Emulation::processToken(int token, char32_t p, int q) {
     switch (token) {
     case TY_CHR():
         _currentScreen->displayCharacter(p);
@@ -1932,7 +1931,7 @@ void Vt102Emulation::sendKeyEvent(QKeyEvent *event, bool fromPaste) {
 
 // Apply current character map.
 
-wchar_t Vt102Emulation::applyCharset(wchar_t c) {
+char32_t Vt102Emulation::applyCharset(char32_t c) {
     // assert for i in [0..31] : vt100extended(vt100_graphics[i]) == i.
     const unsigned short vt100_graphics[32] = {
             // 0/8     1/9    2/10    3/11    4/12    5/13    6/14    7/15
@@ -2146,5 +2145,5 @@ char Vt102Emulation::eraseChar() const {
 void Vt102Emulation::reportDecodingError() {
     if (tokenBufferPos == 0 || (tokenBufferPos == 1 && (tokenBuffer[0] & 0xff) >= 32))
         return;
-    //qDebug()<< "Undecodable sequence:" << QString::fromWCharArray(tokenBuffer, tokenBufferPos);
+    //qDebug()<< "Undecodable sequence:" << QString::fromUcs4(tokenBuffer, tokenBufferPos);
 }

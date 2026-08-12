@@ -955,8 +955,10 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
     // "“‘"　rendering issue.
     //        But it is not a good solution. We should find a better way to solve
     //        this issue.
-    int font_width = _charWidth->string_font_width(text);
-    int width = CharWidth::string_unicode_width(text);
+    // 任务 2 临时改通：display 层仍以 wchar_t 缓冲，此处转为 UCS-4 再测宽（完整适配见任务 3）
+    const std::u32string text32(text.begin(), text.end());
+    int font_width = _charWidth->string_font_width(text32);
+    int width = CharWidth::string_unicode_width(text32);
     if (_fix_quardCRT_issue33 && font_width != width) {
         int single_rect_width = rect.width() / width;
         for (size_t i = 0; i < text.length(); i++) {
@@ -1385,7 +1387,7 @@ void TerminalDisplay::updateImage() {
                                         ? false
                                         : (newLine[x + len + 1].character == 0);
 
-                        int nxtCharWidth = fm.horizontalAdvance(QString::fromWCharArray(&newLine[x+len].character, 1));
+                        int nxtCharWidth = fm.horizontalAdvance(QString::fromUcs4(&newLine[x+len].character, 1));
                         bool nextIsbigWidth = _fixedFont && !nextIsDoubleWidth && nxtCharWidth > _fontWidth;
                         bool nextIsSmallWidth = _fixedFont && newLine[x+len].character && nxtCharWidth < _fontWidth;
 
@@ -1739,8 +1741,10 @@ QPoint TerminalDisplay::cursorPosition() const {
 }
 
 QRect TerminalDisplay::preeditRect() const {
+    // 任务 2 临时改通：preeditString 仍为 std::wstring，测宽前转为 UCS-4（完整适配见任务 3）
+    const std::wstring &preedit = _inputMethodData.preeditString;
     const int preeditLength =
-            CharWidth::string_unicode_width(_inputMethodData.preeditString);
+            CharWidth::string_unicode_width(std::u32string(preedit.begin(), preedit.end()));
 
     if (preeditLength == 0)
         return {};
@@ -1991,7 +1995,7 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             bool smallWidth = _fixedFont && c && charWidth < _fontWidth;
             CharacterColor currentForeground = _image[loc(x, y)].foregroundColor;
             CharacterColor currentBackground = _image[loc(x, y)].backgroundColor;
-            quint8 currentRendition = _image[loc(x, y)].rendition;
+            quint16 currentRendition = _image[loc(x, y)].rendition;
             
             quint32 nxtC = 0;
             bool nxtDoubleWidth = false;

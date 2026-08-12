@@ -353,7 +353,7 @@ public:
      * is inserted at the current cursor position, otherwise it will replace the
      * character already at the current cursor position.
      */
-    void displayCharacter(wchar_t c);
+    void displayCharacter(char32_t c);
 
     // Do composition with last shown character FIXME: Not implemented yet for KDE 4
     void compose(const QString& compose);
@@ -651,7 +651,7 @@ private:
     // cursor color and rendition info
     CharacterColor currentForeground;
     CharacterColor currentBackground;
-    quint8 currentRendition;
+    quint16 currentRendition;
 
     // margins ----------------
     int _topMargin;
@@ -674,7 +674,7 @@ private:
     // effective colors and rendition ------------
     CharacterColor effectiveForeground; // These are derived from
     CharacterColor effectiveBackground; // the cu_* variables above
-    quint8 effectiveRendition;          // to speed up operation
+    quint16 effectiveRendition;         // to speed up operation
 
     class SavedState {
     public:
@@ -683,7 +683,7 @@ private:
 
         int cursorColumn;
         int cursorLine;
-        quint8 rendition;
+        quint16 rendition;
         CharacterColor foreground;
         CharacterColor background;
     };
@@ -693,7 +693,7 @@ private:
     int lastPos;
 
     // used in REP (repeating char)
-    unsigned short lastDrawnChar;
+    char32_t lastDrawnChar;
 
     static Character defaultChar;
 };

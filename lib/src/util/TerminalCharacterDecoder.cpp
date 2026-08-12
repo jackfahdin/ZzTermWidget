@@ -75,7 +75,7 @@ void PlainTextDecoder::decodeLine(const Character* const characters, int count, 
     // note:  we build up a QString and send it to the text stream rather writing
     // into the text stream a character at a time because it is more efficient.
     //(since QTextStream always deals with QStrings internally anyway)
-    std::wstring plainText;
+    std::u32string plainText;
     plainText.reserve(count);
 
     int outputCount = count;
@@ -96,7 +96,7 @@ void PlainTextDecoder::decodeLine(const Character* const characters, int count, 
             ushort extendedCharLength = 0;
             const uint* chars = ExtendedCharTable::instance.lookupExtendedChar(characters[i].character, extendedCharLength);
             if (chars) {
-                std::wstring str;
+                std::u32string str;
                 for (ushort nchar = 0; nchar < extendedCharLength; nchar++) {
                     str.push_back(chars[nchar]);
                 }
@@ -110,7 +110,7 @@ void PlainTextDecoder::decodeLine(const Character* const characters, int count, 
             i += qMax(1, CharWidth::unicode_width(characters[i].character));
         }
     }
-    *_output << QString::fromStdWString(plainText);
+    *_output << QString::fromStdU32String(plainText);
 }
 
 HTMLDecoder::HTMLDecoder()
