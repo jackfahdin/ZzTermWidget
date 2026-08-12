@@ -3370,6 +3370,14 @@ void TerminalDisplay::keyPressEvent(QKeyEvent *event) {
     event->accept();
 }
 
+void TerminalDisplay::keyReleaseEvent(QKeyEvent *event) {
+    // 同步输出兜底同 keyPressEvent：任何键盘输入都立即补刷
+    if (_syncOutputActive)
+        flushSynchronizedOutput();
+    emit keyReleasedSignal(event);
+    event->accept();
+}
+
 void TerminalDisplay::inputMethodEvent(QInputMethodEvent *event) {
     QKeyEvent keyEvent(QEvent::KeyPress, 0, Qt::NoModifier,
                                          event->commitString());

@@ -89,6 +89,9 @@ QTermWidget::QTermWidget(QWidget *msgParent, QWidget *parent)
     m_terminalDisplay->setTerminalSizeStartup(true);
 
     connect(m_terminalDisplay, &TerminalDisplay::keyPressedSignal, m_emulation, &Emulation::sendKeyEvent);
+    connect(m_terminalDisplay, &TerminalDisplay::keyReleasedSignal, this, [this](QKeyEvent *e) {
+        m_emulation->sendKeyEvent(e, false);
+    });
     connect(m_terminalDisplay, &TerminalDisplay::mouseSignal, m_emulation, &Emulation::sendMouseEvent);
     connect(m_terminalDisplay, &TerminalDisplay::sendStringToEmu, this, [this](const char* s){
         m_emulation->sendString(s);

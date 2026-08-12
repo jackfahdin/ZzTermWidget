@@ -29,6 +29,9 @@ private slots:
     void testKittySetModes();
     void testKittyStackLimit();
     void testKittyInvalidSequenceIgnored();
+    void testKittyDisambiguateEncoding();
+    void testKittyEventTypes();
+    void testKittyReleaseIgnoredWhenDisabled();
 };
 
 /**
@@ -384,6 +387,117 @@ void TestEmulation::testKittyInvalidSequenceIgnored()
 
     emu.receiveData("ok", 2); // 解析器恢复正常
     QVERIFY(firstLineText(emu, 80).startsWith(QStringLiteral("ok")));
+}
+
+/**
+ * @brief 构造按键事件（kitty 编码测试用）。
+ */
+static QKeyEvent makeKeyEvent(QEvent::Type type, int key, Qt::KeyboardModifiers mods,
+                              const QString &text = QString(), bool autorepeat = false)
+{
+    return QKeyEvent(type, key, mods, text, autorepeat);
+}
+
+/**
+ * @brief kitty 级别 1 消歧义：Ctrl+I 与 Tab 分离、Esc/带修饰键 CSI u 化、裸键维持传统编码。
+ */
+void TestEmulation::testKittyDisambiguateEncoding()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setKeyBindings(QString()); // 默认键位表（与 QTermWidget 一致的路径）
+    QByteArray sent;
+    QObject::connect(&emu, &Emulation::sendData,
+                     [&](const char *d, int len) { sent.append(d, len); });
+
+    // 未协商：裸 Tab 传统字节 0x09
+    QKeyEvent tabPress = makeKeyEvent(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier, QStringLiteral("\t"));
+    emu.sendKeyEvent(&tabPress, false);
+    QCOMPARE(sent, QByteArray("\x09"));
+    sent.clear();
+
+    emu.receiveData("\033[>1u", 5); // push 级别 1（消歧义）
+
+    QKeyEvent ctrlI = makeKeyEvent(QEvent::KeyPress, Qt::Key_I, Qt::ControlModifier);
+    emu.sendKeyEvent(&ctrlI, false);
+    QCOMPARE(sent, QByteArray("\033[105;5u")); // Ctrl+I：i=105，ctrl → 4+1=5
+    sent.clear();
+
+    emu.sendKeyEvent(&tabPress, false);
+    QCOMPARE(sent, QByteArray("\x09")); // 裸 Tab 维持传统字节（kitty 规范例外）
+    sent.clear();
+
+    QKeyEvent shiftTab = makeKeyEvent(QEvent::KeyPress, Qt::Key_Tab, Qt::ShiftModifier);
+    emu.sendKeyEvent(&shiftTab, false);
+    QCOMPARE(sent, QByteArray("\033[9;2u")); // Shift+Tab：shift → 1+1=2
+    sent.clear();
+
+    QKeyEvent esc = makeKeyEvent(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier, QStringLiteral("\x1b"));
+    emu.sendKeyEvent(&esc, false);
+    QCOMPARE(sent, QByteArray("\033[27u")); // Esc 消歧
+    sent.clear();
+
+    QKeyEvent plainA = makeKeyEvent(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+    emu.sendKeyEvent(&plainA, false);
+    QCOMPARE(sent, QByteArray("a")); // 普通文本键维持现有编码
+}
+
+/**
+ * @brief kitty 级别 2 事件类型：按下 :1 / 重复 :2 / 释放 :3；文本键释放不上报。
+ */
+void TestEmulation::testKittyEventTypes()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setKeyBindings(QString());
+    QByteArray sent;
+    QObject::connect(&emu, &Emulation::sendData,
+                     [&](const char *d, int len) { sent.append(d, len); });
+
+    emu.receiveData("\033[>3u", 5); // push 级别 1+2
+
+    QKeyEvent ctrlShiftI = makeKeyEvent(QEvent::KeyPress, Qt::Key_I,
+                                        Qt::ControlModifier | Qt::ShiftModifier);
+    emu.sendKeyEvent(&ctrlShiftI, false);
+    QCOMPARE(sent, QByteArray("\033[105;6:1u")); // ctrl+shift → 1+5=6，按下 :1
+    sent.clear();
+
+    QKeyEvent ctrlIRelease = makeKeyEvent(QEvent::KeyRelease, Qt::Key_I, Qt::ControlModifier);
+    emu.sendKeyEvent(&ctrlIRelease, false);
+    QCOMPARE(sent, QByteArray("\033[105;5:3u")); // 释放 :3
+    sent.clear();
+
+    QKeyEvent ctrlIRepeat = makeKeyEvent(QEvent::KeyPress, Qt::Key_I, Qt::ControlModifier,
+                                         QString(), true);
+    emu.sendKeyEvent(&ctrlIRepeat, false);
+    QCOMPARE(sent, QByteArray("\033[105;5:2u")); // 自动重复 :2
+    sent.clear();
+
+    QKeyEvent aRelease = makeKeyEvent(QEvent::KeyRelease, Qt::Key_A, Qt::NoModifier);
+    emu.sendKeyEvent(&aRelease, false);
+    QCOMPARE(sent, QByteArray()); // 文本键释放不上报（kitty 规范：需级别 8）
+    sent.clear();
+
+    QKeyEvent enterRelease = makeKeyEvent(QEvent::KeyRelease, Qt::Key_Return, Qt::NoModifier);
+    emu.sendKeyEvent(&enterRelease, false);
+    QCOMPARE(sent, QByteArray()); // 裸 Enter 释放不上报（同上）
+}
+
+/**
+ * @brief 未协商 kitty 时：释放事件不发送任何字节（回归保护）。
+ */
+void TestEmulation::testKittyReleaseIgnoredWhenDisabled()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setKeyBindings(QString());
+    QByteArray sent;
+    QObject::connect(&emu, &Emulation::sendData,
+                     [&](const char *d, int len) { sent.append(d, len); });
+
+    QKeyEvent aRelease = makeKeyEvent(QEvent::KeyRelease, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+    emu.sendKeyEvent(&aRelease, false);
+    QCOMPARE(sent, QByteArray());
 }
 
 QTEST_GUILESS_MAIN(TestEmulation)

@@ -434,8 +434,10 @@ void Vt102Emulation::receiveChar(char32_t cc) {
             return;
         }
 
-        // kitty 键盘协议：CSI ? u（查询）与 CSI > flags u（压栈）在通用参数分发前整体拦截，
-        // 避免下方 for 循环按参数逐个触发导致重复应答/重复压栈
+        /**
+         * @brief kitty 键盘协议：CSI ? u（查询）与 CSI > flags u（压栈）在通用参数分发前整体拦截。
+         * @note 避免下方 for 循环按参数逐个触发导致重复应答/重复压栈。
+         */
         if (epp() && cc == U'u') {
             reportKittyKeyboardFlags();
             resetTokenizer();
@@ -1657,7 +1659,9 @@ void Vt102Emulation::processToken(int token, char32_t p, int q) {
         reportSecondaryAttributes();
         break; // VT100
 
-    // kitty 键盘协议：CSI < [count] u（弹栈）/ CSI = flags ; mode u（设置）
+    /**
+     * @brief kitty 键盘协议：CSI < [count] u（弹栈）/ CSI = flags ; mode u（设置）。
+     */
     case TY_CSI_PL('u'):
         kittyFlagsPop(qMax(1, argv[0]));
         break;
@@ -1859,6 +1863,23 @@ void Vt102Emulation::sendText(const QString &text) {
 }
 
 void Vt102Emulation::sendKeyEvent(QKeyEvent *event, bool fromPaste) {
+    // kitty 键盘协议（级别 1+2）：协商 flags 生效时优先于传统编码；
+    // 粘贴文本（fromPaste）与无键码事件（sendText 合成的 key()==0）不参与
+    if (_kittyFlags != 0 && !fromPaste && event->key() != 0) {
+        QByteArray encoded;
+        if (encodeKittyKeyEvent(event, encoded)) {
+            if (!encoded.isEmpty()) {
+                if (event->type() != QEvent::KeyRelease)
+                    emit outputFromKeypressEvent();
+                emit sendData(encoded.constData(), encoded.length());
+            }
+            return;
+        }
+        // 未命中 kitty 编码的无歧义键：回落下方传统编码
+    } else if (event->type() == QEvent::KeyRelease) {
+        return; // 未协商 kitty：释放事件无传统编码，直接忽略
+    }
+
     Qt::KeyboardModifiers modifiers = event->modifiers();
     KeyboardTranslator::States states = KeyboardTranslator::NoState;
 
@@ -2230,38 +2251,53 @@ char Vt102Emulation::eraseChar() const {
         return '\b';
 }
 
+/**
+ * @brief 压入新的 kitty flags（CSI > flags u）。
+ * @param flags 请求的功能位；未实现的 4/8/16 位按 KITTY_FLAGS_SUPPORTED 掩掉。
+ * @note 栈满拒绝（防 DoS）：当前 flags 与栈内容均不变。
+ */
 void Vt102Emulation::kittyFlagsPush(quint32 flags) {
     if (_kittyFlagsStack.size() >= KITTY_FLAGS_STACK_MAX) {
-        // 栈满拒绝（防 DoS）：当前 flags 与栈内容均不变
         qWarning("Vt102Emulation: kitty keyboard flags stack full, push rejected");
         return;
     }
     _kittyFlagsStack.append(_kittyFlags);
-    _kittyFlags = flags & KITTY_FLAGS_SUPPORTED; // 未实现的 4/8/16 位直接掩掉
+    _kittyFlags = flags & KITTY_FLAGS_SUPPORTED;
 }
 
+/**
+ * @brief 弹出 count 层历史 flags（CSI < [count] u）。
+ * @param count 弹出层数；栈已空时所有 flags 复位为 0。
+ */
 void Vt102Emulation::kittyFlagsPop(int count) {
     for (int i = 0; i < count; i++) {
         if (_kittyFlagsStack.isEmpty()) {
-            _kittyFlags = 0; // 弹空：所有 flags 复位
+            _kittyFlags = 0;
             break;
         }
         _kittyFlags = _kittyFlagsStack.takeLast();
     }
 }
 
+/**
+ * @brief 设置 kitty flags（CSI = flags ; mode u）。
+ * @param flags 目标功能位（先按 KITTY_FLAGS_SUPPORTED 掩码）。
+ * @param mode 1=整体设置（默认）；2=置位指定位；3=复位指定位；其余非法值忽略。
+ */
 void Vt102Emulation::kittyFlagsSet(quint32 flags, int mode) {
     flags &= KITTY_FLAGS_SUPPORTED;
     switch (mode) {
-    case 1: _kittyFlags = flags; break;   // 整体设置（默认）
-    case 2: _kittyFlags |= flags; break;  // 置位指定位
-    case 3: _kittyFlags &= ~flags; break; // 复位指定位
-    default: break;                       // 非法 mode：忽略
+    case 1: _kittyFlags = flags; break;
+    case 2: _kittyFlags |= flags; break;
+    case 3: _kittyFlags &= ~flags; break;
+    default: break;
     }
 }
 
+/**
+ * @brief 应答 CSI ? flags u：flags 如实上报（仅含已实现的级别 1+2）。
+ */
 void Vt102Emulation::reportKittyKeyboardFlags() {
-    // 应答 CSI ? flags u：flags 如实上报（仅含已实现的级别 1+2）
     char tmp[16];
     const int r = snprintf(tmp, sizeof(tmp), "\033[?%uu", _kittyFlags);
     if (r <= 0 || r >= static_cast<int>(sizeof(tmp)))
@@ -2273,4 +2309,90 @@ void Vt102Emulation::reportDecodingError() {
     if (tokenBufferPos == 0 || (tokenBufferPos == 1 && (tokenBuffer[0] & 0xff) >= 32))
         return;
     //qDebug()<< "Undecodable sequence:" << QString::fromUcs4(tokenBuffer, tokenBufferPos);
+}
+
+/**
+ * @brief 计算 kitty 键盘协议的修饰键参数。
+ * @param modifiers Qt 修饰键。
+ * @return 编码值 = 位和 + 1（shift=1 alt=2 ctrl=4 super=8）。
+ */
+static int kittyModifierParam(Qt::KeyboardModifiers modifiers) {
+    int bits = 0;
+    if (modifiers & Qt::ShiftModifier)   bits |= 1;
+    if (modifiers & Qt::AltModifier)     bits |= 2;
+    if (modifiers & Qt::ControlModifier) bits |= 4;
+    if (modifiers & Qt::MetaModifier)    bits |= 8; // super
+    return bits + 1;
+}
+
+bool Vt102Emulation::encodeKittyKeyEvent(QKeyEvent *event, QByteArray &out) {
+    out.clear();
+
+    const int key = event->key();
+    // 纯修饰键本身不产生事件（级别 8 未实现）：吞掉，不回落传统路径
+    if (key == Qt::Key_Shift || key == Qt::Key_Control || key == Qt::Key_Alt
+            || key == Qt::Key_Meta)
+        return true;
+
+    // 键码：特殊键取 kitty 功能键码；可打印键取未 shift 形态码点（字母一律小写）
+    int codepoint = 0;
+    const bool isEnterTabBackspace =
+            (key == Qt::Key_Return || key == Qt::Key_Enter
+             || key == Qt::Key_Tab || key == Qt::Key_Backspace);
+    switch (key) {
+    case Qt::Key_Escape:    codepoint = 27;  break;
+    case Qt::Key_Return:
+    case Qt::Key_Enter:     codepoint = 13;  break;
+    case Qt::Key_Tab:       codepoint = 9;   break;
+    case Qt::Key_Backspace: codepoint = 127; break;
+    default:
+        if (key >= 0x20 && key <= 0x10FFFF) {
+            codepoint = key;
+            if (codepoint >= 'A' && codepoint <= 'Z')
+                codepoint += 32; // kitty 要求未 shift（小写）码点
+        }
+        break;
+    }
+    if (codepoint == 0)
+        return false; // 未覆盖的功能键（方向键等本已无歧义）：回落传统编码
+
+    const int modBits = kittyModifierParam(event->modifiers()) - 1;
+    const bool hasCtrlAltSuper = (modBits & (2 | 4 | 8)) != 0;
+
+    // 事件类型：级别 2 才上报重复（2）与释放（3）；按下恒为 1
+    int eventType = 1;
+    if (_kittyFlags & 2) {
+        if (event->type() == QEvent::KeyRelease)
+            eventType = 3;
+        else if (event->isAutoRepeat())
+            eventType = 2;
+    } else if (event->type() == QEvent::KeyRelease) {
+        return true; // 未协商事件类型：吞掉释放事件
+    }
+
+    // 级别 1（消歧义）下需要 CSI u 编码的键：
+    // Esc（任意修饰）；Enter/Tab/Backspace 带修饰；可打印键带 ctrl/alt/super
+    bool useKittyForm = false;
+    if (_kittyFlags & 1) {
+        if (key == Qt::Key_Escape)
+            useKittyForm = true;
+        else if (isEnterTabBackspace)
+            useKittyForm = (modBits != 0);
+        else
+            useKittyForm = hasCtrlAltSuper;
+    }
+
+    if (!useKittyForm) {
+        // 无歧义键：按下/重复回落传统编码；释放事件按 kitty 规范不上报（级别 8 未实现）
+        return event->type() == QEvent::KeyRelease;
+    }
+
+    out = "\033[" + QByteArray::number(codepoint);
+    const int modParam = modBits + 1;
+    if (_kittyFlags & 2)
+        out += ";" + QByteArray::number(modParam) + ":" + QByteArray::number(eventType);
+    else if (modParam != 1)
+        out += ";" + QByteArray::number(modParam);
+    out += "u";
+    return true;
 }

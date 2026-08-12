@@ -600,6 +600,11 @@ signals:
     void keyPressedSignal(QKeyEvent *e, bool fromPaste);
 
     /**
+     * @brief 用户在终端组件内释放按键时发出（kitty 键盘协议级别 2 的释放事件上报通道）。
+     */
+    void keyReleasedSignal(QKeyEvent* event);
+
+    /**
      * A mouse event occurred.
      * @param button The mouse button (0 for left button, 1 for middle button, 2 for right button, 3 for release)
      * @param column The character column where the event occurred
@@ -659,6 +664,7 @@ protected:
     void enterEvent(QEnterEvent* event) override;
     void leaveEvent(QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* ev) override;
     void mousePressEvent( QMouseEvent* ) override;
     void mouseReleaseEvent( QMouseEvent* ) override;

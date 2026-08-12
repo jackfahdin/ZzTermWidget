@@ -22,6 +22,7 @@ private slots:
     void testSyncOutputDefersRepaint();
     void testSyncOutputTimeoutFlush();
     void testSyncOutputKeypressFlush();
+    void testKittyReleaseEventRouting();
 };
 
 /**
@@ -173,6 +174,30 @@ void TestProtocols::testSyncOutputKeypressFlush()
     QVERIFY(display.synchronizedOutputActive());
 
     emu.receiveData("\033[?2026l", 8); // 清理
+}
+
+/**
+ * @brief keyReleaseEvent 路由：TerminalDisplay 释放事件经 keyReleasedSignal 抵达仿真层编码。
+ */
+void TestProtocols::testKittyReleaseEventRouting()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setImageSize(24, 80);
+    emu.setKeyBindings(QString());
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display;
+    display.setScreenWindow(win);
+    display.resize(800, 600);
+    QObject::connect(&display, &TerminalDisplay::keyReleasedSignal, &emu,
+                     [&](QKeyEvent *e) { emu.sendKeyEvent(e, false); });
+    QByteArray sent;
+    QObject::connect(&emu, &Emulation::sendData,
+                     [&](const char *d, int len) { sent.append(d, len); });
+
+    emu.receiveData("\033[>3u", 5); // 级别 1+2
+    QTest::keyRelease(&display, Qt::Key_I, Qt::ControlModifier);
+    QCOMPARE(sent, QByteArray("\033[105;5:3u"));
 }
 
 QTEST_MAIN(TestProtocols)

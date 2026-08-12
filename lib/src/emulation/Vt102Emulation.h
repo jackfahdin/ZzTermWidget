@@ -166,18 +166,36 @@ private:
   void processToken(int code, char32_t p, int q);
   void processOSC();
 
-  // kitty 键盘协议（级别 1+2）协商状态
-  // 注：kitty 规范要求主/备屏独立 flags 栈；本轮按规格实现单栈，
-  //     实际应用（neovim 等）push/pop 配对使用，行为一致
-  static constexpr quint32 KITTY_FLAGS_SUPPORTED = 0b11; // 仅实现消歧义（1）与事件类型（2）
-  static constexpr int KITTY_FLAGS_STACK_MAX = 64; // flags 栈深度上限，防恶意输入撑爆内存
-  quint32 _kittyFlags = 0;               // 当前生效 flags（默认全关，纯应用协商）
-  QVector<quint32> _kittyFlagsStack;     // CSI > u 压入的历史 flags
+  /**
+   * @name kitty 键盘协议（级别 1+2）协商状态
+   * @note kitty 规范要求主/备屏独立 flags 栈；本轮按规格实现单栈，
+   *       实际应用（neovim 等）push/pop 配对使用，行为一致。
+   */
+  ///@{
+  /** @brief 已实现的 flags 掩码：仅消歧义（1）与事件类型（2）。 */
+  static constexpr quint32 KITTY_FLAGS_SUPPORTED = 0b11;
+  /** @brief flags 栈深度上限，防恶意输入撑爆内存。 */
+  static constexpr int KITTY_FLAGS_STACK_MAX = 64;
+  /** @brief 当前生效 flags（默认全关，纯应用协商）。 */
+  quint32 _kittyFlags = 0;
+  /** @brief CSI > u 压入的历史 flags。 */
+  QVector<quint32> _kittyFlagsStack;
+  ///@}
 
+  /** @brief 压入新的 kitty flags（CSI > flags u）。 */
   void kittyFlagsPush(quint32 flags);
+  /** @brief 弹出 count 层历史 flags（CSI < [count] u）。 */
   void kittyFlagsPop(int count);
+  /** @brief 设置 kitty flags（CSI = flags ; mode u）。 */
   void kittyFlagsSet(quint32 flags, int mode);
+  /** @brief 应答 CSI ? flags u 查询。 */
   void reportKittyKeyboardFlags();
+  /**
+   * @brief 按 kitty 键盘协议编码按键事件。
+   * @param event 按键事件。
+   * @param out 编码输出（未发送任何字节时为空）。
+   * @return true 表示事件已被协议处理（发送或吞掉）；false 表示回落传统编码。
+   */
   bool encodeKittyKeyEvent(QKeyEvent *event, QByteArray &out);
   void processWindowAttributeChange(int attributeToChange, QString newValue);
   void requestWindowAttribute(int);
