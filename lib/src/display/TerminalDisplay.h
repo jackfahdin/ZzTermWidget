@@ -408,6 +408,16 @@ public:
     bool isBidiEnabled() { return _bidiEnabled; }
 
     /**
+     * @brief 开关文本批次聚合绘制路径。
+     * @param enabled true = 批次聚合路径（默认）；false = 改造前逐片段路径。
+     * @note 供像素等价性测试 A/B 双渲染比对，也是聚合路径出问题时的回退手段。
+     */
+    void setTextBatchingEnabled(bool enabled) { _textBatchingEnabled = enabled; }
+
+    /** @brief 查询文本批次聚合绘制路径是否启用。 */
+    bool isTextBatchingEnabled() const { return _textBatchingEnabled; }
+
+    /**
      * Sets the terminal screen section which is displayed in this widget.
      * When updateImage() is called, the display fetches the latest character image from the
      * the associated terminal screen window.
@@ -733,6 +743,12 @@ private:
     // fragments according to their colors and styles and calls
     // drawTextFragment() to draw the fragments
     void drawContents(QPainter &paint, const QRect &rect);
+    /**
+     * @brief 改造前的逐片段文本绘制路径（drawContents 批次聚合的像素基准与回退）。
+     * @param paint 目标画笔。
+     * @param rect 需要重绘的区域。
+     */
+    void drawContentsLegacy(QPainter &paint, const QRect &rect);
     // draws a section of text, all the text in this section
     // has a common color and style
     void drawTextFragment(QPainter& painter, const QRect& rect,
@@ -998,6 +1014,8 @@ private:
     int _topBaseMargin;
 
     bool _drawLineChars;
+
+    bool _textBatchingEnabled = true; ///< 文本批次聚合路径开关（测试 A/B 与回退用）
 
     int _mouseAutohideDelay;
 

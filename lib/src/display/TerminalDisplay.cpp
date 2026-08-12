@@ -1966,6 +1966,13 @@ QRect TerminalDisplay::calculateTextArea(int topLeftX, int topLeftY,
 }
 
 void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
+    // 批次聚合开关：关闭时走改造前的逐片段路径——
+    // 该路径是像素等价性测试的常驻基准，也是聚合路径出问题时的回退手段
+    if (!_textBatchingEnabled) {
+        drawContentsLegacy(paint, rect);
+        return;
+    }
+
     QPoint tL = contentsRect().topLeft();
     int tLx = tL.x();
     int tLy = tL.y();
@@ -2027,6 +2034,156 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             CharacterColor currentBackground = _image[loc(x, y)].backgroundColor;
             quint16 currentRendition = _image[loc(x, y)].rendition;
             
+            char32_t nxtC = 0;
+            bool nxtDoubleWidth = false;
+            int nxtCharWidth = 0;
+            while (x + len <= rlx &&
+                        _image[loc(x + len, y)].foregroundColor == currentForeground &&
+                        _image[loc(x + len, y)].backgroundColor == currentBackground &&
+                        _image[loc(x + len, y)].rendition == currentRendition &&
+                        (nxtDoubleWidth = (_image[qMin(loc(x+len,y)+1,_imageSize)].character == 0)) == doubleWidth &&
+                        !smallWidth &&
+                        !(_fixedFont && (nxtC = _image[loc(x+len,y)].character) && (nxtCharWidth = fm.horizontalAdvance(QString::fromUcs4(&nxtC, 1))) < _fontWidth) &&
+                        !bigWidth &&
+                        !(_fixedFont && !nxtDoubleWidth && nxtC && nxtCharWidth > _fontWidth) &&
+                        isLineChar(_image[loc(x+len,y)]) == lineDraw) // Assignment!
+            {
+                c = _image[loc(x+len,y)].character;
+                if (_image[loc(x+len,y)].rendition & RE_EXTENDED_CHAR) {
+                    // sequence of characters
+                    ushort extendedCharLength = 0;
+                    const uint* chars = ExtendedCharTable::instance.lookupExtendedChar(c, extendedCharLength);
+                    if (chars) {
+                        Q_ASSERT(extendedCharLength > 1);
+                        bufferSize += extendedCharLength - 1;
+                        unistr.resize(bufferSize);
+                        for ( int index = 0 ; index < extendedCharLength ; index++ ) {
+                            Q_ASSERT( p < bufferSize );
+                            unistr[p++] = chars[index];
+                        }
+                    }
+                } else {
+                    // single character
+                    if (c) {
+                        Q_ASSERT( p < bufferSize );
+                        unistr[p++] = c; //fontMap(c);
+                    }
+                }
+                if (doubleWidth) // assert((_image[loc(x+len,y)+1].character == 0)), see
+                                                 // above if condition
+                    len++;         // Skip trailing part of multi-column character
+                len++;
+            }
+            if ((x + len < _usedColumns) && (!_image[loc(x + len, y)].character))
+                len++; // Adjust for trailing part of multi-column character
+
+            bool save__fixedFont = _fixedFont;
+            if (lineDraw)
+                _fixedFont = false;
+            unistr.resize(p);
+
+            // Create a text scaling matrix for double width and double height lines.
+            QTransform textScale;
+
+            if (y < _lineProperties.size()) {
+                if (_lineProperties[y] & LINE_DOUBLEWIDTH)
+                    textScale.scale(2, 1);
+
+                if (_lineProperties[y] & LINE_DOUBLEHEIGHT)
+                    textScale.scale(1, 2);
+            }
+
+            // Apply text scaling matrix.
+            paint.setWorldTransform(textScale, true);
+
+            // calculate the area in which the text will be drawn
+            QRect textArea = calculateTextArea(tLx, tLy, x, y, len, textScale);
+
+            // paint text fragment
+            drawTextFragment(paint, textArea, unistr, &_image[loc(x, y)], tooWide, _screenWindow->isSelected(x, y));
+
+            _fixedFont = save__fixedFont;
+
+            // reset back to single-width, single-height _lines
+            paint.setWorldTransform(textScale.inverted(), true);
+
+            if (y < _lineProperties.size() - 1) {
+                // double-height _lines are represented by two adjacent _lines
+                // containing the same characters
+                // both _lines will have the LINE_DOUBLEHEIGHT attribute.
+                // If the current line has the LINE_DOUBLEHEIGHT attribute,
+                // we can therefore skip the next line
+                if (_lineProperties[y] & LINE_DOUBLEHEIGHT)
+                    y++;
+            }
+
+            x += len - 1;
+        }
+    }
+}
+
+void TerminalDisplay::drawContentsLegacy(QPainter &paint, const QRect &rect) {
+    QPoint tL = contentsRect().topLeft();
+    int tLx = tL.x();
+    int tLy = tL.y();
+
+    int lux = qMin(_usedColumns - 1, qMax(0, (rect.left() - tLx - _leftMargin) / _fontWidth));
+    int luy = qMin(_usedLines - 1, qMax(0, (rect.top() - tLy - _topMargin) / _fontHeight));
+    int rlx = qMin(_usedColumns - 1, qMax(0, (rect.right() - tLx - _leftMargin) / _fontWidth));
+    int rly = qMin(_usedLines - 1, qMax(0, (rect.bottom() - tLy - _topMargin) / _fontHeight));
+
+    QFontMetrics fm(font());
+    const int numberOfColumns = _usedColumns;
+    std::u32string unistr;
+    unistr.reserve(numberOfColumns);
+    for (int y = luy; y <= rly; y++) {
+        char32_t c = _image[loc(lux, y)].character;
+        int x = lux;
+        if (!c && x)
+            x--; // Search for start of multi-column character
+        for (; x <= rlx; x++) {
+            int len = 1;
+            int p = 0;
+
+            // reset our buffer to the number of columns
+            int bufferSize = numberOfColumns;
+            unistr.resize(bufferSize);
+
+            // is this a single character or a sequence of characters ?
+            if (_image[loc(x, y)].rendition & RE_EXTENDED_CHAR) {
+                // sequence of characters
+                ushort extendedCharLength = 0;
+                uint* chars = ExtendedCharTable::instance
+                                .lookupExtendedChar(_image[loc(x,y)].character,extendedCharLength);
+                if (chars) {
+                    Q_ASSERT(extendedCharLength > 1);
+                    bufferSize += extendedCharLength - 1;
+                    unistr.resize(bufferSize);
+                    for ( int index = 0 ; index < extendedCharLength ; index++ ) {
+                        Q_ASSERT( p < bufferSize );
+                        unistr[p++] = chars[index];
+                    }
+                }
+            } else {
+                // single character
+                c = _image[loc(x, y)].character;
+                if (c) {
+                    Q_ASSERT(p < bufferSize);
+                    unistr[p++] = c; // fontMap(c);
+                }
+            }
+
+            bool lineDraw = isLineChar(_image[loc(x,y)]);
+            bool doubleWidth =
+                    (_image[qMin(loc(x, y) + 1, _imageSize)].character == 0);
+            int charWidth = fm.horizontalAdvance(QString::fromUcs4(&c, 1));
+            bool bigWidth = _fixedFont && !doubleWidth && charWidth > _fontWidth;
+            bool tooWide = bigWidth && charWidth >= 2 * _fontWidth;
+            bool smallWidth = _fixedFont && c && charWidth < _fontWidth;
+            CharacterColor currentForeground = _image[loc(x, y)].foregroundColor;
+            CharacterColor currentBackground = _image[loc(x, y)].backgroundColor;
+            quint16 currentRendition = _image[loc(x, y)].rendition;
+
             char32_t nxtC = 0;
             bool nxtDoubleWidth = false;
             int nxtCharWidth = 0;

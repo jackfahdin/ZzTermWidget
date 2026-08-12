@@ -6,6 +6,7 @@ set(QTERMWIDGET_TESTS
     tst_history
     tst_protocols
     tst_benchmark
+    tst_rendering
 )
 
 foreach(test_name IN LISTS QTERMWIDGET_TESTS)
