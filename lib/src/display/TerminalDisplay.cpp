@@ -48,6 +48,8 @@
 #include <QVideoSink>
 #include <QtDebug>
 
+#include <array>
+
 #include "Filter.h"
 #include "Screen.h"
 #include "ScreenWindow.h"
@@ -968,9 +970,14 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
         painter.setPen(color);
     }
 
-    // 计算整段文本的字体度量宽度与 Unicode 宽度
-    int font_width = _charWidth->string_font_width(text);
-    int width = CharWidth::string_unicode_width(text);
+    // quardCRT issue #33 对齐修正判定用的整段宽度：仅在该修正开关开启时才计算。
+    // 开关默认关闭（TerminalDisplay.h:1008），惰性化避免每个文本片段重复扫描两遍字符串
+    int font_width = 0;
+    int width = 0;
+    if (_fix_quardCRT_issue33) {
+        font_width = _charWidth->string_font_width(text);
+        width = CharWidth::string_unicode_width(text);
+    }
 
     /**
      * @brief quardCRT issue #33 对齐修复：逐字绘制宽度不一致的字符。
@@ -1983,6 +1990,25 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
     int rly = qMin(_usedLines - 1, qMax(0, (rect.bottom() - tLy - _topMargin) / _fontHeight));
 
     QFontMetrics fm(font());
+
+    // 每格字体宽度查询缓存：一次绘制内字体不变，同一码点只查一次字体引擎。
+    // ASCII 走定长数组，其余码点走散列；未命中按原逻辑逐字查询（取值与改造前一致）。
+    std::array<int, 128> asciiAdvanceCache;
+    asciiAdvanceCache.fill(-1);
+    QHash<char32_t, int> advanceCache;
+    const auto charAdvance = [&fm, &asciiAdvanceCache, &advanceCache](char32_t ch) -> int {
+        if (ch < 128) {
+            int &cached = asciiAdvanceCache[ch];
+            if (cached < 0)
+                cached = fm.horizontalAdvance(QChar(QLatin1Char(static_cast<char>(ch))));
+            return cached;
+        }
+        auto it = advanceCache.find(ch);
+        if (it == advanceCache.end())
+            it = advanceCache.insert(ch, fm.horizontalAdvance(QString::fromUcs4(&ch, 1)));
+        return it.value();
+    };
+
     const int numberOfColumns = _usedColumns;
     std::u32string unistr;
     unistr.reserve(numberOfColumns);
@@ -2026,14 +2052,14 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             bool lineDraw = isLineChar(_image[loc(x,y)]);
             bool doubleWidth =
                     (_image[qMin(loc(x, y) + 1, _imageSize)].character == 0);
-            int charWidth = fm.horizontalAdvance(QString::fromUcs4(&c, 1));
+            const int charWidth = charAdvance(c);
             bool bigWidth = _fixedFont && !doubleWidth && charWidth > _fontWidth;
             bool tooWide = bigWidth && charWidth >= 2 * _fontWidth;
             bool smallWidth = _fixedFont && c && charWidth < _fontWidth;
             CharacterColor currentForeground = _image[loc(x, y)].foregroundColor;
             CharacterColor currentBackground = _image[loc(x, y)].backgroundColor;
             quint16 currentRendition = _image[loc(x, y)].rendition;
-            
+
             char32_t nxtC = 0;
             bool nxtDoubleWidth = false;
             int nxtCharWidth = 0;
@@ -2043,7 +2069,7 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
                         _image[loc(x + len, y)].rendition == currentRendition &&
                         (nxtDoubleWidth = (_image[qMin(loc(x+len,y)+1,_imageSize)].character == 0)) == doubleWidth &&
                         !smallWidth &&
-                        !(_fixedFont && (nxtC = _image[loc(x+len,y)].character) && (nxtCharWidth = fm.horizontalAdvance(QString::fromUcs4(&nxtC, 1))) < _fontWidth) &&
+                        !(_fixedFont && (nxtC = _image[loc(x+len,y)].character) && (nxtCharWidth = charAdvance(nxtC)) < _fontWidth) &&
                         !bigWidth &&
                         !(_fixedFont && !nxtDoubleWidth && nxtC && nxtCharWidth > _fontWidth) &&
                         isLineChar(_image[loc(x+len,y)]) == lineDraw) // Assignment!
@@ -2093,8 +2119,11 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
                     textScale.scale(1, 2);
             }
 
-            // Apply text scaling matrix.
-            paint.setWorldTransform(textScale, true);
+            // 无行缩放时跳过恒等世界变换的压栈/还原，减少每片段 QPainter 状态操作；
+            // calculateTextArea 内部对恒等变换求逆结果不变，像素输出不受影响
+            const bool hasTextScale = !textScale.isIdentity();
+            if (hasTextScale)
+                paint.setWorldTransform(textScale, true);
 
             // calculate the area in which the text will be drawn
             QRect textArea = calculateTextArea(tLx, tLy, x, y, len, textScale);
@@ -2105,7 +2134,8 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             _fixedFont = save__fixedFont;
 
             // reset back to single-width, single-height _lines
-            paint.setWorldTransform(textScale.inverted(), true);
+            if (hasTextScale)
+                paint.setWorldTransform(textScale.inverted(), true);
 
             if (y < _lineProperties.size() - 1) {
                 // double-height _lines are represented by two adjacent _lines
