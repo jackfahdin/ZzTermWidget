@@ -130,8 +130,8 @@ public:
     void end() override;
 
 private:
-    void openSpan(std::wstring& text , const QString& style);
-    void closeSpan(std::wstring& text);
+    void openSpan(std::u32string& text , const QString& style);
+    void closeSpan(std::u32string& text);
 
     QTextStream* _output;
     const ColorEntry* _colorTable;
