@@ -1356,7 +1356,7 @@ void Screen::addHistLine() {
             _historyLinks.pop_front();
             _historyLinks.push_back(std::move(_linkLines[0]));
         } else {
-            releaseHyperlinkLine(_linkLines[0]); // 防御：无滚动存储时直接丢弃
+            releaseHyperlinkLine(_linkLines[0]); // 防御：历史容量为零（行无法入库）时直接丢弃
         }
         _linkLines[0].clear();
 
@@ -1464,6 +1464,10 @@ void Screen::releaseHyperlinkLine(HyperlinkLine &row) {
         if (it != _hyperlinkRefs.end() && --it.value() == 0) {
             _hyperlinkRefs.erase(it);
             _hyperlinkUris.remove(seg.linkId);
+            // 被回收的若是当前活动链接（应用未发空 URI 关闭），同步复位，
+            // 否则后续写入的字符会携带已失效的 linkId，产生无法解析的段
+            if (_currentHyperlinkId == seg.linkId)
+                _currentHyperlinkId = 0;
             // id 参数映射若仍指向被回收的 linkId，一并移除（映射表很小，线性扫可接受）
             for (auto keyIt = _hyperlinkIds.begin(); keyIt != _hyperlinkIds.end();) {
                 if (keyIt.value() == seg.linkId)

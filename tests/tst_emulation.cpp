@@ -22,6 +22,8 @@ private slots:
     void testOsc8IdMergesSegments();
     void testOsc8ScrollbackKeepsLink();
     void testOsc8ClearLineDropsSegments();
+    void testOsc8StTerminator();
+    void testOsc8ClearLineResetsCurrentLink();
 };
 
 /**
@@ -196,6 +198,48 @@ void TestEmulation::testOsc8ClearLineDropsSegments()
     emu.receiveData("\033[2K", 4); // 光标仍在第 0 行，清整行
     QVERIFY(scr->linkSegments(0).isEmpty());
     QVERIFY(scr->hyperlinkAt(0, 0).isEmpty());
+}
+
+/**
+ * @brief OSC 8 以 ST（ESC \\）终止：URI 无残留字符，链接段正确。
+ */
+void TestEmulation::testOsc8StTerminator()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    const char *seq = "\033]8;;https://example.com\033\\link\033]8;;\033\\ tail";
+    emu.receiveData(seq, int(std::strlen(seq)));
+    Screen *scr = emu.createWindow()->screen();
+    QCOMPARE(scr->hyperlinkAt(0, 0), QStringLiteral("https://example.com"));
+    QCOMPARE(scr->hyperlinkAt(0, 3), QStringLiteral("https://example.com"));
+    QVERIFY(scr->hyperlinkAt(0, 4).isEmpty()); // 空 URI（ST 终止）已结束链接
+    const auto segs = scr->linkSegments(0);
+    QCOMPARE(segs.size(), 1);
+    QCOMPARE(segs[0].startCol, 0);
+    QCOMPARE(segs[0].endCol, 3);
+}
+
+/**
+ * @brief 清行回收活动链接后复位 _currentHyperlinkId：未重发 OSC 8 继续写入的
+ *        字符不得携带已失效的 linkId（zombie 链接回归）。
+ * @note 复现序列：开启链接写 "ab"（未发空 URI 关闭）→ CSI 2 K 清行使引用计数归零
+ *       → 继续写 "cd"。修复前 "cd" 的段指向已回收的 URI，链接静默丢失。
+ */
+void TestEmulation::testOsc8ClearLineResetsCurrentLink()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    const char *seq = "\033]8;;https://a.com\007ab\033[2Kcd";
+    emu.receiveData(seq, int(std::strlen(seq)));
+    Screen *scr = emu.createWindow()->screen();
+    // 清行后活动链接已随段表回收并复位，"cd" 不产生链接段
+    QVERIFY(scr->linkSegments(0).isEmpty());
+    QVERIFY(scr->hyperlinkAt(0, 2).isEmpty());
+    QVERIFY(scr->hyperlinkAt(0, 3).isEmpty());
+    // 链接开启状态已复位：重发同一 URI 可正常建立新链接
+    const char *seq2 = "\033]8;;https://a.com\007ef";
+    emu.receiveData(seq2, int(std::strlen(seq2)));
+    QCOMPARE(scr->hyperlinkAt(0, 4), QStringLiteral("https://a.com"));
 }
 
 QTEST_GUILESS_MAIN(TestEmulation)
