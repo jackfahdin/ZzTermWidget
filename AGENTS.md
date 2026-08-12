@@ -11,6 +11,12 @@ cmake --build build --parallel
 
 本机 Qt 6.11.1 前缀：`/home/zz/Qt/6.11.1/gcc_64`。
 
+## 测试
+
+- 测试位于 `tests/`，使用 Qt 官方 QTest 框架（`Qt6::Test`），无第三方依赖。
+- 选项 `-DZZQTERMWIDGET_BUILD_TESTS=ON`（默认开）；运行：`ctest --test-dir build --output-on-failure`。
+- 新增核心逻辑（解析器、屏幕缓冲、宽度判定等）必须附带回归测试。
+
 ## 目录结构
 
 - `lib/include/` — 对外公共头

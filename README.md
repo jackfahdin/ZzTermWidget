@@ -20,6 +20,10 @@
 - 修复翻译链：lrelease 编译 .ts 为 .qm 并内嵌进 qrc 资源，运行时按系统 locale 自动加载。
 - 修复静态库 res.qrc 资源被链接器剥离导致配色方案不可用的问题。
 - 升级 vendored utf8proc 至 2.11.3（Unicode 17 数据）。
+- 字符管线升级为 char32_t，修复 BMP 外字符（emoji 等）代理对拆分问题。
+- 增加 OSC 52 剪贴板读写开关（默认关闭，可按需开启）。
+- 屏幕缓冲区安全修复（越界访问防护）。
+- 修复 Emulation 默认解码器未初始化的问题。
 
 ## 目录结构
 
@@ -57,6 +61,12 @@ cmake --build build --parallel
 add_subdirectory(path/to/ZzQTermWidget/lib)
 target_link_libraries(your_target PRIVATE ZzQTermWidget::qtermwidget)
 ```
+
+## 测试
+
+- 测试位于 `tests/`，使用 Qt 官方 QTest 框架（`Qt6::Test`），无第三方依赖。
+- 选项 `-DZZQTERMWIDGET_BUILD_TESTS=ON`（默认开）；运行：`ctest --test-dir build --output-on-failure`。
+- 新增核心逻辑（解析器、屏幕缓冲、宽度判定等）必须附带回归测试。
 
 一些注意：
 
