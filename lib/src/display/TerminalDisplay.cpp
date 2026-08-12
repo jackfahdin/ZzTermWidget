@@ -1349,21 +1349,16 @@ void TerminalDisplay::updateImage() {
     Q_ASSERT(this->_usedLines <= this->_lines);
     Q_ASSERT(this->_usedColumns <= this->_columns);
 
-    int y, x, len;
+    int y, x;
 
     QPoint tL = contentsRect().topLeft();
     int tLx = tL.x();
     int tLy = tL.y();
     _hasBlinker = false;
 
-    CharacterColor cf;         // undefined
-    CharacterColor _clipboard; // undefined
-    int cr = -1;               // undefined
-
     const int linesToUpdate = qMin(this->_lines, qMax(0, lines));
     const int columnsToUpdate = qMin(this->_columns, qMax(0, columns));
 
-    char32_t *disstrU = new char32_t[columnsToUpdate];
     char *dirtyMask = new char[columnsToUpdate + 2];
     QRegion dirtyRegion;
 
@@ -1387,75 +1382,17 @@ void TerminalDisplay::updateImage() {
             }
         }
 
-        QFontMetrics fm(font());
         if (!_resizing) // not while _resizing, we're expecting a paintEvent
             for (x = 0; x < columnsToUpdate; ++x) {
                 if ((newLine[x].rendition & RE_BLINK) != 0) {
                     _hasBlinker = true;
                 }
 
-                // Start drawing if this character or the next one differs.
-                // We also take the next one into account to handle the situation
-                // where characters exceed their cell width.
+                // 任何脏格都要求整行重绘。改造前此处按样式逐格分组构建文本串，
+                // 但该串从未用于绘制（死代码），且宽字符尾部单独变脏时不置位；
+                // 直接化后脏区只会更大不会更小，重绘正确性不受影响
                 if (dirtyMask[x]) {
-                    char32_t c = newLine[x + 0].character;
-                    if (!c)
-                        continue;
-                    int p = 0;
-                    disstrU[p++] = c; // fontMap(c);
-                    bool lineDraw = isLineChar(newLine[x+0]);
-                    bool doubleWidth = (x + 1 == columnsToUpdate)
-                                                                 ? false
-                                                                 : (newLine[x + 1].character == 0);
-                    int charWidth = fm.horizontalAdvance(QString::fromUcs4(&c, 1));
-                    bool bigWidth = _fixedFont && !doubleWidth && charWidth > _fontWidth;
-                    bool smallWidth = _fixedFont && charWidth < _fontWidth;
-                    cr = newLine[x].rendition;
-                    _clipboard = newLine[x].backgroundColor;
-                    if (newLine[x].foregroundColor != cf)
-                        cf = newLine[x].foregroundColor;
-                    int lln = columnsToUpdate - x;
-                    for (len = 1; len < lln; ++len) {
-                        const Character &ch = newLine[x + len];
-
-                        if (!ch.character)
-                            continue; // Skip trailing part of multi-col chars.
-
-                        bool nextIsDoubleWidth =
-                                (x + len + 1 == columnsToUpdate)
-                                        ? false
-                                        : (newLine[x + len + 1].character == 0);
-
-                        int nxtCharWidth = fm.horizontalAdvance(QString::fromUcs4(&newLine[x+len].character, 1));
-                        bool nextIsbigWidth = _fixedFont && !nextIsDoubleWidth && nxtCharWidth > _fontWidth;
-                        bool nextIsSmallWidth = _fixedFont && newLine[x+len].character && nxtCharWidth < _fontWidth;
-
-                        if (ch.foregroundColor != cf ||
-                            ch.backgroundColor != _clipboard ||
-                            ch.rendition != cr ||
-                            !dirtyMask[x+len] ||
-                            isLineChar(ch) != lineDraw ||
-                            nextIsDoubleWidth != doubleWidth ||
-                            bigWidth || nextIsbigWidth ||
-                            smallWidth || nextIsSmallWidth) {
-                            break;
-                        }
-
-                        disstrU[p++] = c; // fontMap(c);
-                    }
-
-                    std::u32string unistr(disstrU, p);
-
-                    bool saveFixedFont = _fixedFont;
-                    if (lineDraw)
-                        _fixedFont = false;
-                    if (doubleWidth)
-                        _fixedFont = false;
-
                     updateLine = true;
-
-                    _fixedFont = saveFixedFont;
-                    x += len - 1;
                 }
             }
 
@@ -1516,7 +1453,6 @@ void TerminalDisplay::updateImage() {
         _blinking = false;
     }
     delete[] dirtyMask;
-    delete[] disstrU;
 }
 
 void TerminalDisplay::showResizeNotification() {
