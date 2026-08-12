@@ -16,7 +16,7 @@
 - 去除全部的构建依赖，使用 CMake 构建，通过 `add_subdirectory(lib)` 引入即可，极为方便通过源码引入其他项目。
 - 移植上游 DCS/APC/SOS/PM 控制串吞吃支持与 DECRQM 模式查询应答。
 - 移植上游选择区修复系列（块选择/列选择边界、三击选行等）与双宽高行绘制修复。
-- 移植上游 Fill 背景模式（用背景色填充终端空白区域）。
+- 移植上游 Fill 背景模式（背景图等比缩放填满整个终端，裁剪溢出部分）。
 - 修复翻译链：lrelease 编译 .ts 为 .qm 并内嵌进 qrc 资源，运行时按系统 locale 自动加载。
 - 修复静态库 res.qrc 资源被链接器剥离导致配色方案不可用的问题。
 - 升级 vendored utf8proc 至 2.11.3（Unicode 17 数据）。
@@ -61,7 +61,7 @@ target_link_libraries(your_target PRIVATE ZzQTermWidget::qtermwidget)
 一些注意：
 
 - 原始项目使用 CMake 构建，本项目同样使用 CMake 构建（顶层 `CMakeLists.txt`、`lib/CMakeLists.txt`、`lib/third_party/ptyqt/CMakeLists.txt`）。
-- 在Qt6.6.1上测试通过。
+- 在Qt6.11.1上测试通过。
 - 本项目完全遵守原始项目的LICENSE，修改新增的代码也遵守原始项目的LICENSE。
 
 以下为原始的README：

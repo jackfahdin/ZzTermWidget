@@ -152,7 +152,15 @@ void HistoryFile::get(unsigned char* bytes, int len, int loc)
       if (loc < 0 || len < 0 || loc + len > length)
         fprintf(stderr,"getHist(...,%d,%d): invalid args.\n",len,loc);
       if (!tmpFile.seek(loc)) { qWarning("HistoryFile::get.seek failed"); return; }
-      tmpFile.read(reinterpret_cast<char*>(bytes), len);
+      qint64 rc = tmpFile.read(reinterpret_cast<char*>(bytes), len);
+      // 短读（或读失败）时将未覆盖的尾部清零并告警，避免上层使用未初始化数据
+      if (rc < len)
+      {
+        if (rc < 0) rc = 0;
+        std::fill_n(bytes + rc, len - rc, static_cast<unsigned char>(0));
+        qWarning("HistoryFile::get.read short: expected %d bytes, got %lld",
+                 len, static_cast<long long>(rc));
+      }
   }
 }
 
@@ -210,7 +218,8 @@ int HistoryScrollFile::getLineLen(int lineno)
 
 bool HistoryScrollFile::isWrappedLine(int lineno)
 {
-  if (lineno>=0 && lineno <= getLines()) {
+  // 有效行号范围为 [0, getLines())，上游遗留的 <= 会越界读取 lineflags
+  if (lineno>=0 && lineno < getLines()) {
     unsigned char flag;
     lineflags.get((unsigned char*)&flag,sizeof(unsigned char),(lineno)*sizeof(unsigned char));
     return flag;

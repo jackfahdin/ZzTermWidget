@@ -352,6 +352,8 @@ QStringList QTermWidget::getAvailableColorSchemes() {
 }
 
 QStringList QTermWidget::availableColorSchemes() {
+    // 静态调用路径（构造实例前）也需保证配色资源已初始化；Q_INIT_RESOURCE 幂等，开销可忽略
+    initEmbeddedResources();
     QStringList ret;
     const auto allColorSchemes = ColorSchemeManager::instance()->allColorSchemes();
     for (const ColorScheme* cs : allColorSchemes)
@@ -615,6 +617,8 @@ void QTermWidget::setFlowControlWarningEnabled(bool enabled) {
 }
 
 QStringList QTermWidget::availableKeyBindings() {
+    // 静态调用路径（构造实例前）也需保证键位资源已初始化；Q_INIT_RESOURCE 幂等，开销可忽略
+    initEmbeddedResources();
     return KeyboardTranslatorManager::instance()->allTranslators();
 }
 

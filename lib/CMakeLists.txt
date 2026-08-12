@@ -56,17 +56,16 @@ add_library(qtermwidget STATIC
 )
 add_library(ZzQTermWidget::qtermwidget ALIAS qtermwidget)
 
-# Translations: compile .ts -> .qm and embed under :/lib/qtermwidget/translations
+# 翻译：将 .ts 编译为 .qm，并内嵌到 :/lib/qtermwidget/translations
 if(TARGET Qt6::lrelease)
     file(GLOB QTERMWIDGET_TS_FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/translations/*.ts)
     qt_add_lrelease(qtermwidget
         TS_FILES ${QTERMWIDGET_TS_FILES}
         QM_FILES_OUTPUT_VARIABLE QTERMWIDGET_QM_FILES
     )
-    # Generate a .qrc for the .qm files and let AUTORCC compile it straight into
-    # the static archive. qt_add_resources() on a static library would create a
-    # separate object library that is neither part of libqtermwidget.a nor
-    # installable via install(EXPORT).
+    # 为 .qm 文件生成一个 .qrc，交给 AUTORCC 直接编译进静态库归档。
+    # 若对静态库使用 qt_add_resources()，会生成一个独立 object library，
+    # 它既不属于 libqtermwidget.a，也无法通过 install(EXPORT) 安装。
     set(QTERMWIDGET_TRANSLATIONS_QRC ${CMAKE_CURRENT_BINARY_DIR}/qtermwidget_translations.qrc)
     set(QRC_CONTENT "<RCC>\n    <qresource prefix=\"/lib/qtermwidget/translations\">\n")
     foreach(QM_FILE IN LISTS QTERMWIDGET_QM_FILES)
@@ -78,8 +77,8 @@ if(TARGET Qt6::lrelease)
     target_sources(qtermwidget PRIVATE ${QTERMWIDGET_TRANSLATIONS_QRC})
     set_source_files_properties(${QTERMWIDGET_TRANSLATIONS_QRC} PROPERTIES
         OBJECT_DEPENDS "${QTERMWIDGET_QM_FILES}")
-    # The library calls Q_INIT_RESOURCE() under this macro; resources in a static
-    # archive are stripped by the linker unless explicitly referenced.
+    # 库代码在该宏下调用 Q_INIT_RESOURCE()；静态库归档中的资源对象文件
+    # 若无人显式引用会被链接器剥离。
     target_compile_definitions(qtermwidget PRIVATE QTERMWIDGET_EMBED_TRANSLATIONS)
 endif()
 

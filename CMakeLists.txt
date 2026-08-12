@@ -35,8 +35,10 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS
     Network
     Xml
     Multimedia
-    LinguistTools
 )
+
+# LinguistTools 可选：无 linguist 的环境跳过翻译编译（见 lib/CMakeLists.txt 的 guard）
+find_package(Qt${QT_VERSION_MAJOR} QUIET COMPONENTS LinguistTools)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)

@@ -73,8 +73,8 @@ enum BackgroundMode {
     Zoom,
     Fit,
     Center,
-    Fill,
-    Tile
+    Tile,
+    Fill
 };
 
 class ScreenWindow;
