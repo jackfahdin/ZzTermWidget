@@ -569,13 +569,13 @@ public slots:
     QString screenGet(int row1, int col1, int row2, int col2, int mode);
 
     void setLocked(bool enabled) { _isLocked = enabled; }
+    /**
+     * @brief 请求重绘整个终端显示区。
+     * @note 历史实现用 hide()+show() 强制重绘（Linux 下的粗暴 hack），
+     *       现已降级为标准的 update() 调度重绘；如特定场景仍有残留绘制问题再评估。
+     */
     void repaintDisplay() {
-        // FIXME: we must call hide() and show() to force a repaint,
-        // this is a bad hack, but it works
-    #if defined(Q_OS_LINUX)
-        this->hide();
-        QTimer::singleShot(100, this, [this](){ this->show(); });
-    #endif
+        update();
     }
     void setMessageParentWidget(QWidget *parent) { messageParentWidget = parent; }
     

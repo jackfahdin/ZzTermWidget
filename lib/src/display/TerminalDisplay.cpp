@@ -951,12 +951,31 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
         painter.setPen(color);
     }
 
-    // FIXME: Here is a hack to solve the East Asian language symbol
-    // "“‘"　rendering issue.
-    //        But it is not a good solution. We should find a better way to solve
-    //        this issue.
+    // 计算整段文本的字体度量宽度与 Unicode 宽度
     int font_width = _charWidth->string_font_width(text);
     int width = CharWidth::string_unicode_width(text);
+
+    /**
+     * @brief quardCRT issue #33 对齐修复：逐字绘制宽度不一致的字符。
+     *
+     * 修复问题：东亚引号等字符的"字体度量宽度 ≠ Unicode 宽度"，
+     * 整段绘制会导致后续字符错位，此处改为逐字绘制并按字符修正对齐。
+     *
+     * 来源：https://github.com/QQxiaoming/quardCRT/issues/33
+     * （该修复本身是权宜之计，后续应寻找更通用的方案。）
+     *
+     * 边界：仅在 `_fix_quardCRT_issue33` 开启且整段文本的字体宽度
+     * 与 Unicode 宽度不一致时进入此分支；其中仅当下列三张字符表
+     * （右对齐/居中/左对齐，见 issue #33 评论的对齐分类：
+     * https://github.com/QQxiaoming/quardCRT/issues/33#issuecomment-2044020900 ）
+     * 命中的字符才做偏移修正，其余字符按单元格起点直接绘制：
+     * | 左对齐       | 居中         | 右对齐       |
+     * | ------------ | ------------ | ------------ |
+     * | L'’' U+2019 | L'×' U+00D7 | L'‘' U+2018 |
+     * | L'”' U+201D | L'÷' U+00F7 | L'“' U+201C |
+     * |              | L'‖' U+2016  | L'‚' U+201A |
+     * |              |              | L'‛' U+201B |
+     */
     if (_fix_quardCRT_issue33 && font_width != width) {
         int single_rect_width = rect.width() / width;
         for (size_t i = 0; i < text.length(); i++) {
@@ -967,13 +986,7 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
             } else {
                 if (_charWidth->font_width(line_char) !=
                         CharWidth::unicode_width(line_char)) {
-                    // https://github.com/QQxiaoming/quardCRT/issues/33#issuecomment-2044020900
-                    // | left         | center       | right        |
-                    // | ------------ | ------------ | ------------ |
-                    // | L'’' U+2019 | L'×' U+00D7 | L'‘' U+2018 |
-                    // | L'”' U+201D | L'÷' U+00F7 | L'“' U+201C |
-                    // |              | L'‖' U+2016  | L'‚' U+201A |
-                    // |              |              | L'‛' U+201B |
+                    // 三张对齐分类字符表，码点清单见上方 issue #33 注释
                     const QList<char32_t> right_chars = {0x201C, 0x2018, 0x201A, 0x201B};
                     const QList<char32_t> center_chars = {0x00D7, 0x00F7, 0x2016};
                     const QList<char32_t> left_chars = {0x201D, 0x2019, 0x2580, 0x2584, 0x2588};
@@ -1055,10 +1068,9 @@ void TerminalDisplay::drawTextFragment(QPainter &painter, const QRect &rect,
                                        bool isSelection) {
     painter.save();
 
-    // when the selected text is not opaque, the text is drawn with inverted
-    // colors but else the text is drawn with the normal colors
-    //
     // 选中文本的前景色/背景色交换仅在局部副本上进行，避免写回调用方的 Character。
+    // 注：swappedStyle 必须声明在函数作用域——style 指针在后续 setup painter /
+    // drawCharacters 中仍被解引用，移入 if 块内会导致悬垂指针。
     Character swappedStyle;
     if (_selectedTextOpacity < 1.0) {
         if (isSelection) {
@@ -1944,7 +1956,7 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
     std::u32string unistr;
     unistr.reserve(numberOfColumns);
     for (int y = luy; y <= rly; y++) {
-        quint32 c = _image[loc(lux, y)].character;
+        char32_t c = _image[loc(lux, y)].character;
         int x = lux;
         if (!c && x)
             x--; // Search for start of multi-column character
@@ -1991,7 +2003,7 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             CharacterColor currentBackground = _image[loc(x, y)].backgroundColor;
             quint16 currentRendition = _image[loc(x, y)].rendition;
             
-            quint32 nxtC = 0;
+            char32_t nxtC = 0;
             bool nxtDoubleWidth = false;
             int nxtCharWidth = 0;
             while (x + len <= rlx &&
