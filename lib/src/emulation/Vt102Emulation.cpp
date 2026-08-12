@@ -560,6 +560,27 @@ void Vt102Emulation::processOSC() {
         }
         break;
     }
+    //  Ps = 8 → Hyperlink（OSC 8）：ESC ] 8 ; params ; URI ST。params 为 ':' 分隔的
+    //  键值对，仅识别 id=<value>（相同 id 的分段视为同一链接），未知键忽略；
+    //  空 URI 表示当前链接结束。非法格式安全忽略，不产生热点。
+    case 8: {
+        const QString content = QString::fromUcs4(tokenBuffer + 4, tokenBufferPos - 5);
+        const int sep = content.indexOf(QLatin1Char(';'));
+        if (sep < 0)
+            break; // 缺 URI 段：非法序列，忽略
+        const QString params = content.left(sep);
+        const QString uri = content.mid(sep + 1);
+        QString id;
+        if (!params.isEmpty()) {
+            const auto pairs = params.split(QLatin1Char(':'), Qt::SkipEmptyParts);
+            for (const QString &kv : pairs) {
+                if (kv.startsWith(QLatin1String("id=")))
+                    id = kv.mid(3);
+            }
+        }
+        _currentScreen->setCurrentHyperlink(uri, id);
+        break;
+    }
     default:
         reportDecodingError();
         break;

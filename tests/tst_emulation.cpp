@@ -1,4 +1,5 @@
 #include <QtTest>
+#include <cstring>
 #include "Vt102Emulation.h"
 #include "ScreenWindow.h"
 #include "Screen.h"
@@ -17,6 +18,10 @@ private slots:
     void testEmojiSurrogatePair();
     void testOversizedToken();
     void testFullLineCopyKeepsNewLine();
+    void testOsc8BasicLink();
+    void testOsc8IdMergesSegments();
+    void testOsc8ScrollbackKeepsLink();
+    void testOsc8ClearLineDropsSegments();
 };
 
 /**
@@ -125,6 +130,72 @@ void TestEmulation::testFullLineCopyKeepsNewLine()
 
     // 末尾 '\n' 来自 writeToStream 的“选区超出末行末尾则补换行”既有逻辑，与本次修复无关
     QCOMPARE(output, QString(80, QLatin1Char('A')) + QStringLiteral("\nnext\n"));
+}
+
+/**
+ * @brief OSC 8 基本解析：链接文本落入段表，空 URI 结束链接后文本不再属于链接。
+ */
+void TestEmulation::testOsc8BasicLink()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    const char *seq = "\033]8;;https://example.com\007link\033]8;;\007 tail";
+    emu.receiveData(seq, int(std::strlen(seq)));
+    Screen *scr = emu.createWindow()->screen();
+    QCOMPARE(scr->hyperlinkAt(0, 0), QStringLiteral("https://example.com"));
+    QCOMPARE(scr->hyperlinkAt(0, 3), QStringLiteral("https://example.com"));
+    QVERIFY(scr->hyperlinkAt(0, 4).isEmpty()); // 空 URI 已结束链接
+    QVERIFY(scr->hyperlinkAt(0, 6).isEmpty());
+}
+
+/**
+ * @brief OSC 8 id 参数：相同 id 的多次开启视为同一链接（复用同一 linkId）。
+ */
+void TestEmulation::testOsc8IdMergesSegments()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    const char *seq = "\033]8;id=x;https://a.com\007ab\033]8;;\007 \033]8;id=x;https://a.com\007cd\033]8;;\007";
+    emu.receiveData(seq, int(std::strlen(seq)));
+    Screen *scr = emu.createWindow()->screen();
+    const auto segs = scr->linkSegments(0);
+    QCOMPARE(segs.size(), 2);
+    QCOMPARE(segs[0].linkId, segs[1].linkId); // 同 id 合并为同一链接
+    QCOMPARE(segs[0].startCol, 0);
+    QCOMPARE(segs[0].endCol, 1);
+    QCOMPARE(segs[1].startCol, 3);
+    QCOMPARE(segs[1].endCol, 4);
+}
+
+/**
+ * @brief 链接行进 scrollback 后段表随行走：绝对行坐标下仍可查到 URI。
+ */
+void TestEmulation::testOsc8ScrollbackKeepsLink()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 3, 80);
+    emu.setHistory(HistoryTypeBuffer(100));
+    const char *seq = "\033]8;;https://example.com\007lnk\033]8;;\007\r\n1\r\n2\r\n3\r\n4";
+    emu.receiveData(seq, int(std::strlen(seq)));
+    Screen *scr = emu.createWindow()->screen();
+    QVERIFY(scr->getHistLines() >= 1); // 链接行已滚入历史
+    QCOMPARE(scr->hyperlinkAt(0, 0), QStringLiteral("https://example.com")); // 绝对行 0 = 最早历史行
+}
+
+/**
+ * @brief 清行（CSI 2 K）清除该行链接段表，链接 URI 引用计数归零回收。
+ */
+void TestEmulation::testOsc8ClearLineDropsSegments()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    const char *seq = "\033]8;;https://example.com\007lnk\033]8;;\007";
+    emu.receiveData(seq, int(std::strlen(seq)));
+    Screen *scr = emu.createWindow()->screen();
+    QCOMPARE(scr->linkSegments(0).size(), 1);
+    emu.receiveData("\033[2K", 4); // 光标仍在第 0 行，清整行
+    QVERIFY(scr->linkSegments(0).isEmpty());
+    QVERIFY(scr->hyperlinkAt(0, 0).isEmpty());
 }
 
 QTEST_GUILESS_MAIN(TestEmulation)

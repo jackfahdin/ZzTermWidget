@@ -59,7 +59,7 @@ Screen::Screen(int l, int c)
             selBegin(0), selTopLeft(0), selBottomRight(0), blockSelectionMode(false),
             effectiveForeground(CharacterColor()),
             effectiveBackground(CharacterColor()), effectiveRendition(0),
-            lastPos(-1) {
+            lastPos(-1), _linkLines(new HyperlinkLine[lines + 1]) {
     lineProperties.resize(lines + 1);
     for (int i = 0; i < lines + 1; i++)
             lineProperties[i] = LINE_DEFAULT;
@@ -71,6 +71,7 @@ Screen::Screen(int l, int c)
 
 Screen::~Screen() {
     delete[] screenLines;
+    delete[] _linkLines;
     delete history;
 }
 
@@ -308,6 +309,15 @@ void Screen::resizeImage(int new_lines, int new_columns) {
 
     clearSelection();
 
+    // OSC 8：段表数组随屏幕尺寸重建；收缩时被裁行的段表回收（先 move 再 delete 旧数组）
+    HyperlinkLine *newLinkLines = new HyperlinkLine[new_lines + 1];
+    for (int i = 0; i < qMin(lines, new_lines + 1); i++)
+        newLinkLines[i] = std::move(_linkLines[i]);
+    for (int i = qMin(lines, new_lines + 1); i < lines + 1; i++)
+        releaseHyperlinkLine(_linkLines[i]);
+    delete[] _linkLines;
+    _linkLines = newLinkLines;
+
     delete[] screenLines;
     screenLines = newScreenLines;
 
@@ -514,6 +524,8 @@ void Screen::reset(bool clearScreen) {
     setDefaultRendition();
     saveCursor();
 
+    clearAllHyperlinks(); // OSC 8：复位时丢弃全部链接段表与 URI 映射
+
     if (clearScreen)
         clear();
 }
@@ -719,6 +731,7 @@ notcombine:
     if (getMode(MODE_Insert))
         insertChars(w);
 
+    const int writeStartX = cuX; // 折行后的最终写入起始列（OSC 8 段表用）
     lastPos = loc(cuX, cuY);
 
     // check if selection is still valid.
@@ -750,6 +763,11 @@ notcombine:
         w--;
     }
     cuX = newCursorX;
+
+    // OSC 8：活动链接期间写入的字符计入当前行的链接段表
+    // 已知简化：MODE_Insert 插入模式下既有段表不随字符右移，段与单元格可能错位（组合场景罕见）
+    if (_currentHyperlinkId != 0)
+        addHyperlinkSegment(cuY, writeStartX, newCursorX - 1);
 }
 
 void Screen::compose(const QString & /*compose*/) {
@@ -932,6 +950,7 @@ void Screen::clearImage(int loca, int loce, char c) {
 
     for (int y = topLine; y <= bottomLine; y++) {
         lineProperties[y] = 0;
+        releaseHyperlinkLine(_linkLines[y]); // 清行连带清除链接段表
 
         int endCol = (y == bottomLine) ? loce % columns : columns - 1;
         int startCol = (y == topLine) ? loca % columns : 0;
@@ -963,17 +982,23 @@ void Screen::moveImage(int dest, int sourceBegin, int sourceEnd) {
     //(search the web for 'memmove implementation' for details)
     if (dest < sourceBegin) {
         for (int i = 0; i <= lines; i++) {
+            releaseHyperlinkLine(_linkLines[(dest / columns) + i]); // 目标行被覆盖，旧段表回收
             screenLines[(dest / columns) + i] =
                     screenLines[(sourceBegin / columns) + i];
             lineProperties[(dest / columns) + i] =
                     lineProperties[(sourceBegin / columns) + i];
+            _linkLines[(dest / columns) + i] =
+                    std::move(_linkLines[(sourceBegin / columns) + i]); // 段表随行走（move 防止引用计数双降）
         }
     } else {
         for (int i = lines; i >= 0; i--) {
+            releaseHyperlinkLine(_linkLines[(dest / columns) + i]); // 目标行被覆盖，旧段表回收
             screenLines[(dest / columns) + i] =
                     screenLines[(sourceBegin / columns) + i];
             lineProperties[(dest / columns) + i] =
                     lineProperties[(sourceBegin / columns) + i];
+            _linkLines[(dest / columns) + i] =
+                    std::move(_linkLines[(sourceBegin / columns) + i]); // 段表随行走（move 防止引用计数双降）
         }
     }
 
@@ -1323,6 +1348,18 @@ void Screen::addHistLine() {
 
         int newHistLines = history->getLines();
 
+        // OSC 8：链接段随行进入 scrollback；历史满丢弃最旧行时同步丢弃其段表
+        if (newHistLines > oldHistLines) {
+            _historyLinks.push_back(std::move(_linkLines[0]));
+        } else if (oldHistLines > 0) {
+            releaseHyperlinkLine(_historyLinks.front());
+            _historyLinks.pop_front();
+            _historyLinks.push_back(std::move(_linkLines[0]));
+        } else {
+            releaseHyperlinkLine(_linkLines[0]); // 防御：无滚动存储时直接丢弃
+        }
+        _linkLines[0].clear();
+
         bool beginIsTL = (selBegin == selTopLeft);
 
         // If the history is full, increment the count
@@ -1363,6 +1400,93 @@ void Screen::addHistLine() {
     }
 }
 
+void Screen::setCurrentHyperlink(const QString &uri, const QString &osc8Id) {
+    if (uri.isEmpty()) {
+        _currentHyperlinkId = 0; // 空 URI：结束当前链接
+        return;
+    }
+    if (!osc8Id.isEmpty()) {
+        // 相同 id 且 URI 未变：复用 linkId（分段属于同一链接）
+        auto it = _hyperlinkIds.find(osc8Id);
+        if (it != _hyperlinkIds.end() && _hyperlinkUris.value(it.value()) == uri) {
+            _currentHyperlinkId = it.value();
+            return;
+        }
+    }
+    const quint32 id = _nextHyperlinkId++;
+    _hyperlinkUris.insert(id, uri);
+    _hyperlinkRefs.insert(id, 0);
+    if (!osc8Id.isEmpty())
+        _hyperlinkIds.insert(osc8Id, id);
+    _currentHyperlinkId = id;
+}
+
+QVector<HyperlinkSegment> Screen::linkSegments(int absoluteLine) const {
+    const int histLines = history->getLines();
+    if (absoluteLine < 0 || absoluteLine >= histLines + lines)
+        return {};
+    if (absoluteLine < histLines) {
+        if (absoluteLine < static_cast<int>(_historyLinks.size()))
+            return _historyLinks[absoluteLine];
+        return {};
+    }
+    return _linkLines[absoluteLine - histLines];
+}
+
+QString Screen::hyperlinkUri(quint32 linkId) const {
+    return _hyperlinkUris.value(linkId);
+}
+
+QString Screen::hyperlinkAt(int absoluteLine, int column) const {
+    const auto segments = linkSegments(absoluteLine);
+    for (const HyperlinkSegment &seg : segments) {
+        if (column >= seg.startCol && column <= seg.endCol)
+            return _hyperlinkUris.value(seg.linkId);
+    }
+    return {};
+}
+
+void Screen::addHyperlinkSegment(int y, int startCol, int endCol) {
+    HyperlinkLine &row = _linkLines[y];
+    // 与行尾相邻的同 id 段合并，避免逐字符产生碎段
+    if (!row.isEmpty() && row.last().linkId == _currentHyperlinkId
+            && row.last().endCol >= startCol - 1) {
+        row.last().endCol = qMax(row.last().endCol, endCol);
+        return;
+    }
+    row.append({startCol, endCol, _currentHyperlinkId});
+    _hyperlinkRefs[_currentHyperlinkId]++;
+}
+
+void Screen::releaseHyperlinkLine(HyperlinkLine &row) {
+    for (const HyperlinkSegment &seg : row) {
+        auto it = _hyperlinkRefs.find(seg.linkId);
+        if (it != _hyperlinkRefs.end() && --it.value() == 0) {
+            _hyperlinkRefs.erase(it);
+            _hyperlinkUris.remove(seg.linkId);
+            // id 参数映射若仍指向被回收的 linkId，一并移除（映射表很小，线性扫可接受）
+            for (auto keyIt = _hyperlinkIds.begin(); keyIt != _hyperlinkIds.end();) {
+                if (keyIt.value() == seg.linkId)
+                    keyIt = _hyperlinkIds.erase(keyIt);
+                else
+                    ++keyIt;
+            }
+        }
+    }
+    row.clear();
+}
+
+void Screen::clearAllHyperlinks() {
+    // 整体丢弃（reset 路径），无需逐个维护引用计数
+    for (int i = 0; i < lines + 1; i++)
+        _linkLines[i].clear();
+    _historyLinks.clear();
+    _hyperlinkUris.clear();
+    _hyperlinkRefs.clear();
+    _hyperlinkIds.clear();
+    _currentHyperlinkId = 0;
+}
+
 int Screen::getHistLines() const { return history->getLines(); }
 
 void Screen::setScroll(const HistoryType &t, bool copyPreviousScroll) {
@@ -1374,6 +1498,10 @@ void Screen::setScroll(const HistoryType &t, bool copyPreviousScroll) {
         HistoryScroll *oldScroll = history;
         history = t.scroll(nullptr);
         delete oldScroll;
+        // 历史整体废弃（clearHistory）：同步丢弃历史链接段表
+        for (HyperlinkLine &row : _historyLinks)
+            releaseHyperlinkLine(row);
+        _historyLinks.clear();
     }
 }
 

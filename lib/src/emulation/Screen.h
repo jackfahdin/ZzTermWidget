@@ -22,6 +22,9 @@
 #ifndef SCREEN_H
 #define SCREEN_H
 
+#include <deque>
+
+#include <QHash>
 #include <QRect>
 #include <QSet>
 #include <QTextStream>
@@ -39,6 +42,15 @@
 #define MODES_SCREEN   6
 
 class TerminalCharacterDecoder;
+
+/**
+ * @brief OSC 8 超链接在一行内覆盖的列区间段。
+ */
+struct HyperlinkSegment {
+    int startCol;   ///< 起始列（含）
+    int endCol;     ///< 结束列（含）
+    quint32 linkId; ///< 链接标识，经 Screen::hyperlinkUri() 换取 URI
+};
 
 /**
     \brief An image of characters with associated attributes.
@@ -313,6 +325,29 @@ public:
     int  getCursorY() const;
     
     QString getScreenText(int row1, int col1, int row2, int col2, int mode);
+
+    /**
+     * @brief 设置/结束当前 OSC 8 超链接上下文。
+     * @param uri 链接目标；空串表示结束当前链接（后续文本不再属于链接）。
+     * @param osc8Id OSC 8 params 中的 id 参数（可为空）；相同 id 且 URI 未变的分段复用同一 linkId。
+     */
+    void setCurrentHyperlink(const QString &uri, const QString &osc8Id);
+
+    /**
+     * @brief 返回绝对行 @p absoluteLine（历史行 + 屏幕行统一编号）上的超链接段表。
+     * @return 段表副本；该行无链接或行号越界时为空。
+     */
+    QVector<HyperlinkSegment> linkSegments(int absoluteLine) const;
+
+    /**
+     * @brief 返回 @p linkId 对应的 URI；无效 id 返回空串。
+     */
+    QString hyperlinkUri(quint32 linkId) const;
+
+    /**
+     * @brief 返回绝对行 @p absoluteLine、列 @p column 处的超链接 URI；无链接返回空串。
+     */
+    QString hyperlinkAt(int absoluteLine, int column) const;
 
     /** Clear the entire screen and move the cursor to the home position.
      * Equivalent to calling clearEntireScreen() followed by home().
@@ -694,6 +729,22 @@ private:
 
     // used in REP (repeating char)
     char32_t lastDrawnChar;
+
+    // OSC 8 超链接 ----------------
+    // 行级稀疏段表：无链接的行为空 QVector（零额外堆分配）；链接 URI 用段引用计数管理，
+    // 段随行清除/滚出/丢弃而销毁，计数归零时回收 URI 与 id 映射
+    typedef QVector<HyperlinkSegment> HyperlinkLine;
+    HyperlinkLine *_linkLines;               // [lines + 1]，与 screenLines 平行
+    std::deque<HyperlinkLine> _historyLinks; // 与 history 行一一对应
+    QHash<quint32, QString> _hyperlinkUris;  // linkId → URI
+    QHash<quint32, int> _hyperlinkRefs;      // linkId → 段引用计数
+    QHash<QString, quint32> _hyperlinkIds;   // OSC 8 id 参数 → linkId
+    quint32 _currentHyperlinkId = 0;         // 0 = 无活动链接
+    quint32 _nextHyperlinkId = 1;
+
+    void addHyperlinkSegment(int y, int startCol, int endCol);
+    void releaseHyperlinkLine(HyperlinkLine &row);
+    void clearAllHyperlinks();
 
     static Character defaultChar;
 };
