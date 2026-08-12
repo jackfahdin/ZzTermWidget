@@ -23,6 +23,7 @@ private slots:
     void testSyncOutputTimeoutFlush();
     void testSyncOutputKeypressFlush();
     void testKittyReleaseEventRouting();
+    void testKeyReleasePropagationSemantics();
 };
 
 /**
@@ -198,6 +199,41 @@ void TestProtocols::testKittyReleaseEventRouting()
     emu.receiveData("\033[>3u", 5); // 级别 1+2
     QTest::keyRelease(&display, Qt::Key_I, Qt::ControlModifier);
     QCOMPARE(sent, QByteArray("\033[105;5:3u"));
+}
+
+/**
+ * @brief keyReleaseEvent 传播语义：仅 kitty 消费（吞掉/上报）的释放事件被 accept，
+ *        未消费的保持未接受状态以恢复向上传播（回归：无条件 accept 截断传播）。
+ */
+void TestProtocols::testKeyReleasePropagationSemantics()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setImageSize(24, 80);
+    emu.setKeyBindings(QString());
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display;
+    display.setScreenWindow(win);
+    display.resize(800, 600);
+    QObject::connect(&display, &TerminalDisplay::keyReleasedSignal, &emu,
+                     [&](QKeyEvent *e) { emu.sendKeyEvent(e, false); });
+    QByteArray sent;
+    QObject::connect(&emu, &Emulation::sendData,
+                     [&](const char *d, int len) { sent.append(d, len); });
+
+    // 未协商 kitty：释放事件不被消费，保持未接受状态（向上传播）
+    QKeyEvent plainRelease(QEvent::KeyRelease, Qt::Key_I, Qt::ControlModifier);
+    QApplication::sendEvent(&display, &plainRelease);
+    QVERIFY(!plainRelease.isAccepted());
+    QCOMPARE(sent, QByteArray());
+
+    emu.receiveData("\033[>1u", 5); // push 级别 1（消歧义）
+
+    // kitty 生效：未覆盖功能键的释放被吞掉（accept，无字节发出）
+    QKeyEvent upRelease(QEvent::KeyRelease, Qt::Key_Up, Qt::NoModifier);
+    QApplication::sendEvent(&display, &upRelease);
+    QVERIFY(upRelease.isAccepted());
+    QCOMPARE(sent, QByteArray());
 }
 
 QTEST_MAIN(TestProtocols)

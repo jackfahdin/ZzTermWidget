@@ -3375,7 +3375,10 @@ void TerminalDisplay::keyReleaseEvent(QKeyEvent *event) {
     if (_syncOutputActive)
         flushSynchronizedOutput();
     emit keyReleasedSignal(event);
-    event->accept();
+    // 仿真层消费（kitty 协议上报或吞掉）的释放事件保持 accepted；
+    // 未消费的走基类默认实现，保持事件向上传播的原有语义
+    if (!event->isAccepted())
+        QWidget::keyReleaseEvent(event);
 }
 
 void TerminalDisplay::inputMethodEvent(QInputMethodEvent *event) {

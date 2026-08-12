@@ -259,6 +259,9 @@ public slots:
     /**
      * Interprets a key press event and emits the sendData() signal with
      * the resulting character stream.
+     *
+     * 未被消费的 KeyRelease 事件（未协商 kitty 键盘协议时）会被 ignore()，
+     * 调用方可据此决定是否让事件继续向上传播。
      */
     virtual void sendKeyEvent(QKeyEvent*, bool fromPaste);
 

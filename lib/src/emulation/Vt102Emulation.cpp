@@ -1875,9 +1875,16 @@ void Vt102Emulation::sendKeyEvent(QKeyEvent *event, bool fromPaste) {
             }
             return;
         }
-        // 未命中 kitty 编码的无歧义键：回落下方传统编码
+        // 未命中 kitty 编码的无歧义键（方向键/F1-F12 等）：
+        // 按下/重复回落下方传统编码；释放事件按 kitty 规范吞掉，
+        // 否则传统路径不区分按下/释放，每次释放会重发按下序列（双发）
+        if (event->type() == QEvent::KeyRelease)
+            return;
     } else if (event->type() == QEvent::KeyRelease) {
-        return; // 未协商 kitty：释放事件无传统编码，直接忽略
+        // 未协商 kitty：释放事件无传统编码，不消费，
+        // ignore 以便 TerminalDisplay 恢复事件向上传播的默认语义
+        event->ignore();
+        return;
     }
 
     Qt::KeyboardModifiers modifiers = event->modifiers();

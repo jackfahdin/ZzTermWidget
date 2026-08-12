@@ -32,6 +32,7 @@ private slots:
     void testKittyDisambiguateEncoding();
     void testKittyEventTypes();
     void testKittyReleaseIgnoredWhenDisabled();
+    void testKittyUnhandledKeyReleaseSwallowed();
 };
 
 /**
@@ -498,6 +499,36 @@ void TestEmulation::testKittyReleaseIgnoredWhenDisabled()
     QKeyEvent aRelease = makeKeyEvent(QEvent::KeyRelease, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
     emu.sendKeyEvent(&aRelease, false);
     QCOMPARE(sent, QByteArray());
+}
+
+/**
+ * @brief kitty 生效时未覆盖功能键（codepoint==0）的释放事件吞掉：
+ *        按下回落传统编码，释放不重发按下序列（回归：方向键释放双发 \033[A）。
+ */
+void TestEmulation::testKittyUnhandledKeyReleaseSwallowed()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setKeyBindings(QString());
+    QByteArray sent;
+    QObject::connect(&emu, &Emulation::sendData,
+                     [&](const char *d, int len) { sent.append(d, len); });
+
+    emu.receiveData("\033[>1u", 5); // push 级别 1（消歧义）
+
+    QKeyEvent upPress = makeKeyEvent(QEvent::KeyPress, Qt::Key_Up, Qt::NoModifier);
+    emu.sendKeyEvent(&upPress, false);
+    QCOMPARE(sent, QByteArray("\033[A")); // 按下：回落传统编码
+    sent.clear();
+
+    QKeyEvent upRelease = makeKeyEvent(QEvent::KeyRelease, Qt::Key_Up, Qt::NoModifier);
+    emu.sendKeyEvent(&upRelease, false);
+    QCOMPARE(sent, QByteArray()); // 释放：吞掉，不双发 \033[A
+    sent.clear();
+
+    QKeyEvent f5Release = makeKeyEvent(QEvent::KeyRelease, Qt::Key_F5, Qt::NoModifier);
+    emu.sendKeyEvent(&f5Release, false);
+    QCOMPARE(sent, QByteArray()); // F5 释放同样吞掉
 }
 
 QTEST_GUILESS_MAIN(TestEmulation)
