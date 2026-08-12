@@ -1,3 +1,11 @@
+ZzQTermWidget 渲染性能优化 / 2026-08-12
+===============================
+ * benchmark 基线设施：解析吞吐 / 全量重绘 / TUI 局部重绘三用例（tests/tst_benchmark.cpp，进 ctest 但无硬性性能断言）。
+ * 像素等价性常驻测试：批次聚合路径与 Legacy 逐片段路径双渲染逐像素比对（tests/tst_rendering.cpp）。
+ * drawContents 开销削减：每格字体宽度按码点缓存、quardCRT issue #33 整段宽度惰性计算、无行缩放时跳过恒等世界变换。
+ * updateImage 移除未使用的逐格分组（含每格 horizontalAdvance 查询），脏行判定直接化，行为不变。
+ * 实测（本机，Release）：全量重绘 6.1ms → 1.4ms（-77%）；TUI 局部重绘 6.1ms → 1.4ms（-77%）；解析吞吐 3.9ms → 3.9ms（持平）。
+
 ZzQTermWidget 协议三件套 / 2026-08-12
 ===============================
  * OSC 8 显式超链接：应用标注的真链接可 Ctrl+点击打开、右键复制地址，优先于正则 URL 匹配。

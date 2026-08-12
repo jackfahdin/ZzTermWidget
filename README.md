@@ -71,6 +71,11 @@ target_link_libraries(your_target PRIVATE ZzQTermWidget::qtermwidget)
 - 选项 `-DZZQTERMWIDGET_BUILD_TESTS=ON`（默认开）；运行：`ctest --test-dir build --output-on-failure`。
 - 新增核心逻辑（解析器、屏幕缓冲、宽度判定等）必须附带回归测试。
 
+性能与渲染回归：
+
+- `tst_benchmark`：渲染性能基线（解析吞吐 / 全量重绘 / TUI 局部重绘），进 ctest 但无硬性性能断言，数字仅 Release 构建下有参考意义。
+- `tst_rendering`：像素等价性测试，批次聚合与 Legacy 两条绘制路径双渲染逐像素比对，是绘制路径改造的安全网。
+
 一些注意：
 
 - 原始项目使用 CMake 构建，本项目同样使用 CMake 构建（顶层 `CMakeLists.txt`、`lib/CMakeLists.txt`、`lib/third_party/ptyqt/CMakeLists.txt`）。
