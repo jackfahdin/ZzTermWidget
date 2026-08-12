@@ -2,6 +2,7 @@
 #include "Vt102Emulation.h"
 #include "ScreenWindow.h"
 #include "Screen.h"
+#include "TerminalCharacterDecoder.h"
 
 /**
  * @brief 终端仿真核心的回归测试（经 receiveData 喂字节流，断言 Screen 状态）。
@@ -15,6 +16,7 @@ private slots:
     void testWideChar();
     void testEmojiSurrogatePair();
     void testOversizedToken();
+    void testFullLineCopyKeepsNewLine();
 };
 
 /**
@@ -96,6 +98,33 @@ void TestEmulation::testOversizedToken()
     // 恢复验证：后续正常文本仍可正确显示
     emu.receiveData("OK", 2);
     QVERIFY(firstLineText(emu, 80).startsWith(QStringLiteral("OK")));
+}
+
+/**
+ * @brief 满行复制回归：恰好写满整行的文本经复制路径导出时，行尾换行不得被丢弃。
+ * @note 走 Screen::writeLinesToStream → copyLineToStream 真实路径（PlainTextDecoder）。
+ *       80 个字符写满第 0 行后以 "\r\n" 显式换行，行不会被标记 LINE_WRAPPED，
+ *       因此 preserveLineBreaks 下应输出换行；修复前 count + 1 < worstCase 恒假导致
+ *       '\n' 被静默丢弃，两行文本粘连（边界 off-by-one）。
+ */
+void TestEmulation::testFullLineCopyKeepsNewLine()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    QByteArray firstLine(80, 'A');
+    firstLine.append("\r\n");
+    emu.receiveData(firstLine.constData(), firstLine.size());
+    emu.receiveData("next", 4);
+
+    QString output;
+    QTextStream stream(&output);
+    PlainTextDecoder decoder;
+    decoder.begin(&stream);
+    emu.createWindow()->screen()->writeLinesToStream(&decoder, 0, 1);
+    decoder.end();
+
+    // 末尾 '\n' 来自 writeToStream 的“选区超出末行末尾则补换行”既有逻辑，与本次修复无关
+    QCOMPARE(output, QString(80, QLatin1Char('A')) + QStringLiteral("\nnext\n"));
 }
 
 QTEST_GUILESS_MAIN(TestEmulation)

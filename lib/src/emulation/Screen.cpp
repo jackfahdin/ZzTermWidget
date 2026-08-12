@@ -1291,7 +1291,10 @@ int Screen::copyLineToStream(int line, int start, int count,
     const bool omitLineBreak =
             (currentLineProperties & LINE_WRAPPED) || !preserveLineBreaks;
 
-    if (!omitLineBreak && appendNewLine && (count + 1 < worstCase)) {
+    // 边界说明：换行符写入索引 count，其最大取值为 worstCase - 1（行满时 count == columns 或
+    // == 历史行长），故条件为 count < worstCase 即可保证不越界；若收紧为 count + 1 < worstCase
+    // 会在行恰好写满时静默丢弃 '\n'，导致复制/导出时满行与下一行粘连
+    if (!omitLineBreak && appendNewLine && (count < worstCase)) {
         characterBuffer[count] = '\n';
         count++;
     }

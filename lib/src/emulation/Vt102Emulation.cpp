@@ -53,6 +53,8 @@ void Vt102Emulation::clearEntireScreen() {
 
 void Vt102Emulation::reset() {
     resetTokenizer();
+    // 退出 token 丢弃模式：否则 reset 后仍会持续吞吃后续输入
+    tokenDiscard = false;
     resetModes();
     resetCharset(0);
     _screen[0]->reset();
