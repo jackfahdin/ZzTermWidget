@@ -145,6 +145,7 @@ void TerminalDisplay::setScreenWindow(ScreenWindow *window) {
     }
 
     _screenWindow = window;
+    _osc8Filter->setScreenWindow(window);
 
     if (window) {
         // TODO: Determine if this is an issue.
@@ -343,6 +344,7 @@ TerminalDisplay::TerminalDisplay(QWidget *parent)
         _opacity(static_cast<qreal>(1)), _backgroundMode(None),
         _selectedTextOpacity(static_cast<qreal>(1)),
         _filterChain(new TerminalImageFilterChain()),
+        _osc8Filter(new Osc8Filter()),
         _cursorShape(Emulation::KeyboardCursorShape::BlockCursor),
         mMotionAfterPasting(NoMoveScreenWindow), _leftBaseMargin(1),
         _topBaseMargin(1), _drawLineChars(true),_mouseAutohideDelay(-1) {
@@ -359,6 +361,9 @@ TerminalDisplay::TerminalDisplay(QWidget *parent)
     // konsole in opaque mode.
     _topMargin = _topBaseMargin;
     _leftMargin = _leftBaseMargin;
+
+    // OSC 8 显式超链接热点：先于链中其他过滤器注册，保证命中优先级
+    _filterChain->addFilter(_osc8Filter);
 
     // create scroll bar for scrolling output up and down
     // set the scroll bar's slider to occupy the whole area of the scroll bar
@@ -451,6 +456,8 @@ TerminalDisplay::~TerminalDisplay() {
     delete _charWidth;
     delete _gridLayout;
     delete _outputSuspendedLabel;
+    _filterChain->removeFilter(_osc8Filter);
+    delete _osc8Filter;
     delete _filterChain;
 }
 

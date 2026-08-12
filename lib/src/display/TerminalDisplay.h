@@ -941,6 +941,9 @@ private:
     // list of filters currently applied to the display.  used for links and
     // search highlight
     TerminalImageFilterChain* _filterChain;
+    // OSC 8 显式超链接过滤器：构造时先于 UrlFilter 注册进 _filterChain，
+    // 命中同一单元格时 OSC 8 链接优先于正则匹配链接
+    Osc8Filter *_osc8Filter;
     QRegion _mouseOverHotspotArea;
 
     QTermWidget::KeyboardCursorShape _cursorShape;

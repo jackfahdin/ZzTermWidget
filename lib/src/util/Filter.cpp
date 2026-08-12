@@ -35,6 +35,8 @@
 #include "CharWidth.h"
 #include "TerminalCharacterDecoder.h"
 #include "qtermwidget.h"
+#include "ScreenWindow.h"
+#include "Screen.h"
 
 FilterChain::~FilterChain() {
 }
@@ -622,4 +624,57 @@ QList<QAction *> UrlFilter::HotSpot::actions() {
     }
 
     return list;
+}
+
+Osc8Filter::Osc8Filter() : Filter() {
+}
+
+void Osc8Filter::setScreenWindow(ScreenWindow *window) { _screenWindow = window; }
+
+void Osc8Filter::process() {
+    if (!_screenWindow)
+        return;
+    Screen *screen = _screenWindow->screen();
+    if (!screen)
+        return;
+    // 热点行号以窗口可见区为坐标系：窗口第 i 行 ↔ 绝对行 currentLine()+i
+    const int topLine = _screenWindow->currentLine();
+    const int windowLines = _screenWindow->windowLines();
+    for (int i = 0; i < windowLines; i++) {
+        const auto segments = screen->linkSegments(topLine + i);
+        for (const HyperlinkSegment &seg : segments) {
+            const QString uri = screen->hyperlinkUri(seg.linkId);
+            if (uri.isEmpty())
+                continue;
+            addHotSpot(new HotSpot(i, seg.startCol, i, seg.endCol, uri, this));
+        }
+    }
+}
+
+Osc8Filter::HotSpot::HotSpot(int startLine, int startColumn, int endLine,
+                             int endColumn, const QString &uri, QObject *actionParent)
+    : Filter::HotSpot(startLine, startColumn, endLine, endColumn),
+      _uri(uri), _actionParent(actionParent) {
+    setType(Link);
+}
+
+bool Osc8Filter::HotSpot::hasClickAction() { return true; }
+
+QString Osc8Filter::HotSpot::clickActionToolTip() {
+    return tr("Follow link (ctrl + click)");
+}
+
+void Osc8Filter::HotSpot::clickAction() {
+    // openUrl 失败（无 handler 等）静默返回 false，不崩溃
+    QDesktopServices::openUrl(QUrl(_uri));
+}
+
+QList<QAction *> Osc8Filter::HotSpot::actions() {
+    // URI 按值捕获：热点可能随过滤器 reset 被删除，动作不得悬空引用
+    QAction *copyLinkAction = new QAction(QObject::tr("Copy Link Address"), _actionParent);
+    const QString uri = _uri;
+    QObject::connect(copyLinkAction, &QAction::triggered, copyLinkAction, [uri]() {
+        QApplication::clipboard()->setText(uri);
+    });
+    return {copyLinkAction};
 }

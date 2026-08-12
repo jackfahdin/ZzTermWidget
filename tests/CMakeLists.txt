@@ -4,6 +4,7 @@ set(QTERMWIDGET_TESTS
     tst_emulation
     tst_osc52
     tst_history
+    tst_protocols
 )
 
 foreach(test_name IN LISTS QTERMWIDGET_TESTS)

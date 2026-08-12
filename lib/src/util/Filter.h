@@ -30,6 +30,8 @@
 
 #include "Character.h"
 
+class ScreenWindow;
+
 /**
  * A filter processes blocks of text looking for certain patterns (such as URLs or keywords from a list)
  * and marks the areas which match the filter's patterns as 'hotspots'.
@@ -403,6 +405,44 @@ public:
 private:
     QString* _buffer;
     QList<int>* _linePositions;
+};
+
+/**
+ * @brief OSC 8 显式超链接过滤器。
+ *
+ * 与正则扫描的 UrlFilter 不同，本过滤器不做文本匹配：process() 直接读取
+ * ScreenWindow 可见各行在 Screen 中登记的 OSC 8 链接段表，逐段创建热点。
+ * 在 FilterChain 中须先于 UrlFilter 注册，使命中同一单元格时 OSC 8 链接优先。
+ */
+class Osc8Filter : public Filter
+{
+    Q_OBJECT
+public:
+    /**
+     * @brief OSC 8 超链接热点：Ctrl+点击经 QDesktopServices::openUrl 打开，
+     *        右键动作提供"复制链接地址"。
+     */
+    class HotSpot : public Filter::HotSpot {
+    public:
+        HotSpot(int startLine, int startColumn, int endLine, int endColumn,
+                const QString &uri, QObject *actionParent = nullptr);
+        void clickAction() override;
+        QString clickActionToolTip() override;
+        bool hasClickAction() override;
+        QList<QAction *> actions() override;
+        /** @brief 返回热点对应的链接 URI。 */
+        QString uri() const { return _uri; }
+    private:
+        QString _uri;
+        QObject *_actionParent; ///< 右键动作的对象树父节点（不拥有语义外的生命周期责任）
+    };
+
+    Osc8Filter();
+    /** @brief 绑定数据源窗口；process() 时从该窗口的 Screen 读取链接段表。 */
+    void setScreenWindow(ScreenWindow *window);
+    void process() override;
+private:
+    ScreenWindow *_screenWindow = nullptr;
 };
 
 #endif //FILTER_H
