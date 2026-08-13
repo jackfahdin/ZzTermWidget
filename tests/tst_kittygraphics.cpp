@@ -68,6 +68,15 @@ private slots:
     void testChunkInterruptedByNewCommand();
     void testMalformedInputs();
     void testDimensionCap();
+    // Screen 级生命周期（任务 2）
+    void testScreenPlaceDefaultsAndRefs();
+    void testScreenPlacementSurvivesScrollIntoHistory();
+    void testScreenClearLineDestroysPlacement();
+    void testScreenResizeCropsPlacements();
+    void testScreenResetClearsAll();
+    void testScreenDeleteVariants();
+    void testScreenReplaceSameImageAndPlacement();
+    void testScreenAnonymousImageFreedWithPlacement();
 };
 
 void TestKittyGraphics::testParseKeysAndDefaults()
@@ -264,6 +273,182 @@ void TestKittyGraphics::testDimensionCap()
                          256LL * 1024 * 1024, r),
              KittyGraphicsParser::Status::Error);
     QCOMPARE(r.errorMessage, QByteArray("image too large"));
+}
+
+/** @brief 构造纯色 ARGB32 测试图。 */
+static QImage solidImage(int w, int h, const QColor &color)
+{
+    QImage img(w, h, QImage::Format_ARGB32);
+    img.fill(color);
+    return img;
+}
+
+void TestKittyGraphics::testScreenPlaceDefaultsAndRefs()
+{
+    Screen scr(24, 80);
+    scr.setScroll(HistoryTypeBuffer(1000));
+    QVERIFY(scr.kittyStoreImage(solidImage(16, 32, Qt::red), 42)); // 恰好 2x2 单元格（默认 8x16）
+    const quint32 handle = scr.kittyImageHandle(42);
+    QVERIFY(handle != 0);
+    quint32 ph = 0;
+    int cols = 0, rows = 0;
+    QCOMPARE(scr.kittyPlace(handle, 42, KittyPlacementParams{}, &ph, &cols, &rows),
+             KittyPlaceError::Ok);
+    QCOMPARE(cols, 2); // 16px / 8px
+    QCOMPARE(rows, 2); // 32px / 16px
+    QVERIFY(ph != 0);
+    // 行级引用挂在放置覆盖的每一行（锚定行 rowOffset=0）
+    QCOMPARE(scr.kittyRefs(0).size(), 1);
+    QCOMPARE(scr.kittyRefs(1).size(), 1);
+    QCOMPARE(scr.kittyRefs(0).at(0).rowOffset, 0);
+    QCOMPARE(scr.kittyRefs(1).at(0).rowOffset, 1);
+    QCOMPARE(scr.kittyRefs(2).size(), 0);
+    const KittyPlacement *pl = scr.kittyPlacement(ph);
+    QVERIFY(pl != nullptr);
+    QCOMPARE(pl->imageId, 42u);
+    QCOMPARE(pl->anchorLine, 0);
+    QCOMPARE(pl->col, 0);
+    QVERIFY(scr.hasImages());
+}
+
+void TestKittyGraphics::testScreenPlacementSurvivesScrollIntoHistory()
+{
+    Screen scr(24, 80);
+    scr.setScroll(HistoryTypeBuffer(1000));
+    QVERIFY(scr.kittyStoreImage(solidImage(8, 16, Qt::red), 1));
+    quint32 ph = 0;
+    QCOMPARE(scr.kittyPlace(scr.kittyImageHandle(1), 1, KittyPlacementParams{}, &ph),
+             KittyPlaceError::Ok);
+    // 30 次 index()：首行滚入历史，放置引用随行迁移（绝对行坐标不变仍为 0）
+    for (int i = 0; i < 30; i++)
+        scr.index();
+    QVERIFY(scr.getHistLines() > 0);
+    QCOMPARE(scr.kittyRefs(0).size(), 1);
+    QCOMPARE(scr.kittyPlacement(ph), scr.kittyPlacement(ph)); // 放置存活
+    QVERIFY(scr.kittyPlacement(ph) != nullptr);
+    // 废弃历史（clearHistory 路径）：历史中的引用销毁，放置死亡；图像数据仍在
+    scr.setScroll(HistoryTypeNone(), false);
+    QCOMPARE(scr.kittyRefs(0).size(), 0);
+    QVERIFY(scr.kittyPlacement(ph) == nullptr);
+    QVERIFY(scr.hasKittyImage(1)); // a=t/T 落库图像不因放置消失而释放
+}
+
+void TestKittyGraphics::testScreenClearLineDestroysPlacement()
+{
+    Screen scr(24, 80);
+    QVERIFY(scr.kittyStoreImage(solidImage(8, 16, Qt::red), 2));
+    quint32 ph = 0;
+    QCOMPARE(scr.kittyPlace(scr.kittyImageHandle(2), 2, KittyPlacementParams{}, &ph),
+             KittyPlaceError::Ok);
+    scr.clearEntireLine(); // 光标在第 0 行：清行连带销毁该行引用
+    QCOMPARE(scr.kittyRefs(0).size(), 0);
+    QVERIFY(scr.kittyPlacement(ph) == nullptr); // 全部行引用销毁 → 放置回收
+    QVERIFY(scr.graphicsDirty());               // 引用销毁必须置图形脏标志
+}
+
+void TestKittyGraphics::testScreenResizeCropsPlacements()
+{
+    Screen scr(24, 80);
+    scr.setCursorYX(21, 0); // 放置在第 20 行（setCursorYX 为 1 基坐标）
+    QVERIFY(scr.kittyStoreImage(solidImage(8, 16, Qt::red), 3));
+    quint32 ph = 0;
+    QCOMPARE(scr.kittyPlace(scr.kittyImageHandle(3), 3, KittyPlacementParams{}, &ph),
+             KittyPlaceError::Ok);
+    QCOMPARE(scr.kittyRefs(20).size(), 1);
+    scr.setCursorYX(1, 0); // 光标移离放置行，避免 resize 保焦路径把该行滚回可见区
+    scr.resizeImage(10, 80); // 收缩：第 20 行被裁，其引用直接销毁（无历史可入）
+    QVERIFY(scr.kittyPlacement(ph) == nullptr);
+}
+
+void TestKittyGraphics::testScreenResetClearsAll()
+{
+    Screen scr(24, 80);
+    QVERIFY(scr.kittyStoreImage(solidImage(8, 16, Qt::red), 4));
+    QCOMPARE(scr.kittyPlace(scr.kittyImageHandle(4), 4, KittyPlacementParams{}),
+             KittyPlaceError::Ok);
+    scr.reset();
+    QVERIFY(!scr.hasKittyImage(4));
+    QVERIFY(scr.kittyRefs(0).isEmpty());
+    QVERIFY(!scr.hasImages());
+}
+
+void TestKittyGraphics::testScreenDeleteVariants()
+{
+    Screen scr(24, 80);
+    QVERIFY(scr.kittyStoreImage(solidImage(8, 16, Qt::red), 10));
+    QVERIFY(scr.kittyStoreImage(solidImage(8, 16, Qt::blue), 11));
+    // 图像 10 两个放置（行 0 与行 5），图像 11 一个放置（行 10）
+    KittyPlacementParams p;
+    QCOMPARE(scr.kittyPlace(scr.kittyImageHandle(10), 10, p), KittyPlaceError::Ok);
+    scr.setCursorYX(6, 0); // 第 5 行（setCursorYX 为 1 基坐标）
+    QCOMPARE(scr.kittyPlace(scr.kittyImageHandle(10), 10, p), KittyPlaceError::Ok);
+    scr.setCursorYX(11, 0); // 第 10 行
+    QCOMPARE(scr.kittyPlace(scr.kittyImageHandle(11), 11, p), KittyPlaceError::Ok);
+
+    // d=i + p：只删指定 (i,p) 放置
+    KittyPlacementParams withPid;
+    withPid.placementId = 7;
+    scr.setCursorYX(13, 0); // 第 12 行
+    QCOMPARE(scr.kittyPlace(scr.kittyImageHandle(11), 11, withPid), KittyPlaceError::Ok);
+    scr.kittyDeleteByImage(11, 7, false);
+    QCOMPARE(scr.kittyRefs(12).size(), 0); // (11,7) 放置已删
+    QCOMPARE(scr.kittyRefs(10).size(), 1); // 同图像匿名放置保留
+    QVERIFY(scr.hasKittyImage(11));
+
+    // d=i（小写）：删图像 10 全部放置，数据保留
+    scr.kittyDeleteByImage(10, 0, false);
+    QCOMPARE(scr.kittyRefs(0).size(), 0);
+    QCOMPARE(scr.kittyRefs(5).size(), 0);
+    QVERIFY(scr.hasKittyImage(10));
+
+    // d=I（大写）：连同释放无引用图像数据
+    scr.kittyDeleteByImage(10, 0, true);
+    QVERIFY(!scr.hasKittyImage(10));
+
+    // d=c：删除与光标单元格相交的放置
+    scr.setCursorYX(11, 0); // 光标置于第 10 行
+    scr.kittyDeleteAtCursor(false);
+    QCOMPARE(scr.kittyRefs(10).size(), 0);
+    QVERIFY(scr.hasKittyImage(11)); // 小写不释放数据
+
+    // d=A：删除全部可见放置并释放无引用图像
+    scr.setCursorYX(16, 0); // 第 15 行
+    QCOMPARE(scr.kittyPlace(scr.kittyImageHandle(11), 11, p), KittyPlaceError::Ok);
+    scr.kittyDeleteAll(true);
+    QVERIFY(!scr.hasKittyImage(11));
+    QVERIFY(!scr.hasImages());
+}
+
+void TestKittyGraphics::testScreenReplaceSameImageAndPlacement()
+{
+    Screen scr(24, 80);
+    QVERIFY(scr.kittyStoreImage(solidImage(8, 16, Qt::red), 20));
+    KittyPlacementParams p;
+    p.placementId = 3;
+    quint32 ph1 = 0;
+    QCOMPARE(scr.kittyPlace(scr.kittyImageHandle(20), 20, p, &ph1), KittyPlaceError::Ok);
+    // 同 (i=20, p=3) 在新位置重复放置 = 替换：旧放置消失
+    scr.setCursorYX(9, 5); // 第 8 行第 4 列（setCursorYX 为 1 基坐标）
+    quint32 ph2 = 0;
+    QCOMPARE(scr.kittyPlace(scr.kittyImageHandle(20), 20, p, &ph2), KittyPlaceError::Ok);
+    QVERIFY(ph2 != ph1);
+    QVERIFY(scr.kittyPlacement(ph1) == nullptr);
+    QCOMPARE(scr.kittyRefs(0).size(), 0);
+    QCOMPARE(scr.kittyRefs(8).size(), 1);
+    QCOMPARE(scr.kittyPlacement(ph2)->col, 4);
+}
+
+void TestKittyGraphics::testScreenAnonymousImageFreedWithPlacement()
+{
+    Screen scr(24, 80);
+    quint32 handle = 0;
+    QVERIFY(scr.kittyStoreImage(solidImage(8, 16, Qt::red), 0, &handle)); // i=0 匿名
+    QVERIFY(handle != 0);
+    QCOMPARE(scr.kittyImageHandle(0), 0u); // 匿名不占 id 命名空间
+    QCOMPARE(scr.kittyPlace(handle, 0, KittyPlacementParams{}), KittyPlaceError::Ok);
+    scr.clearEntireLine(); // 销毁唯一放置 → 匿名图像数据随之释放
+    QVERIFY(scr.image(handle) == nullptr);
+    QVERIFY(!scr.hasImages());
 }
 
 QTEST_MAIN(TestKittyGraphics)

@@ -26,6 +26,7 @@
 
 #include <QHash>
 #include <QImage>
+#include <QList>
 #include <QRect>
 #include <QSet>
 #include <QTextStream>
@@ -71,6 +72,61 @@ struct ImagePlacement {
 struct ScreenImage {
     QImage image;               ///< ARGB32 像素数据（隐式共享，拷贝廉价）
     bool transparentBackground; ///< true = 透明底（未着色区域透出文本背景）
+};
+
+/**
+ * @brief kitty 放置参数（执行层传入，不含锚定信息；锚定取当前光标位置）。
+ */
+struct KittyPlacementParams {
+    quint32 placementId = 0; ///< p= 放置 id（0 = 匿名放置）
+    int srcX = 0;            ///< x= 源矩形左（像素）
+    int srcY = 0;            ///< y= 源矩形上（像素）
+    int srcW = 0;            ///< w= 源矩形宽（0 = 整图宽）
+    int srcH = 0;            ///< h= 源矩形高（0 = 整图高）
+    int cellXOff = 0;        ///< X= 单元格内像素水平偏移（须小于单元格像素宽）
+    int cellYOff = 0;        ///< Y= 单元格内像素垂直偏移（须小于单元格像素高）
+    int cols = 0;            ///< c= 显示区列数（0 = 按源矩形与单元格尺寸向上取整推算）
+    int rows = 0;            ///< r= 显示区行数（0 = 同上；只给一个时另一个按宽高比推算）
+    qint32 zIndex = 0;       ///< z= z-index（<0 文本之下，>=0 文本之上）
+};
+
+/**
+ * @brief kitty 图像的一次放置（锚定在单元格网格上，随内容滚动）。
+ */
+struct KittyPlacement {
+    quint32 imageHandle;   ///< 内部图像句柄（Screen::_images 键）
+    quint32 imageId;       ///< 客户端图像 id（i=，0 = 匿名图像）
+    quint32 placementId;   ///< 客户端放置 id（p=，0 = 匿名放置）
+    int anchorLine;        ///< 锚定绝对行（history+screen 统一编号；仅记录，绘制以行引用位置为准）
+    int col;               ///< 锚定列
+    int cols;              ///< 显示区列数（单元格）
+    int rows;              ///< 显示区行数（单元格）
+    int srcX;              ///< 源矩形左（像素，已与源图取交）
+    int srcY;              ///< 源矩形上（像素）
+    int srcW;              ///< 源矩形宽（像素）
+    int srcH;              ///< 源矩形高（像素）
+    int cellXOff;          ///< 单元格内像素水平偏移
+    int cellYOff;          ///< 单元格内像素垂直偏移
+    qint32 zIndex;         ///< z-index
+    quint64 serial;        ///< 插入序（同 z 同 id 排序稳定化）
+};
+
+/**
+ * @brief kitty 放置在单个网格行上的引用（与 sixel 的 ImagePlacement 同构）。
+ */
+struct KittyPlacementRef {
+    quint32 placementHandle; ///< 放置句柄，经 Screen::kittyPlacement() 换取放置参数
+    int rowOffset;           ///< 本行在放置内的行偏移（0 = 放置首行；绘制层只从 0 行画一次）
+};
+
+/**
+ * @brief kittyPlace() 的失败原因。
+ */
+enum class KittyPlaceError {
+    Ok,              ///< 成功
+    NoSuchImage,     ///< 图像句柄不存在（ENOENT）
+    InvalidArgument, ///< X/Y 越界、源矩形取交为空等（EINVAL）
+    BudgetExceeded   ///< 像素预算超限（ENOSPC；预留，当前放置不产生像素不入预算）
 };
 
 /**
@@ -414,6 +470,59 @@ public:
      *       sixel 像素表与行放置表同生共死（引用计数归零即回收），O(1) 无需额外维护。
      */
     bool hasImages() const { return !_images.isEmpty(); }
+
+    /** @brief 共享像素预算剩余字节数（解析器解码前预检用）。 */
+    qint64 imageBytesRemaining() const { return MAX_IMAGE_BYTES - _imageBytes; }
+
+    /**
+     * @brief 落库一张 kitty 图像（a=t/T 的存储步骤）。
+     * @param image 解码后的 ARGB32 图像。
+     * @param clientId 客户端图像 id（i=）；0 = 匿名图像（不占 id 命名空间，随最后放置死亡释放）。
+     * @param handleOut 非空时返回内部图像句柄。
+     * @return false = 预算超限（先淘汰无放置引用的 kitty 图像，仍不够才失败）。
+     * @note 同 clientId 重传的"先删旧图"语义由调用方（执行层）先行处理，本函数不查重。
+     */
+    bool kittyStoreImage(const QImage &image, quint32 clientId, quint32 *handleOut = nullptr);
+
+    /** @brief clientId → 内部图像句柄；不存在（含 clientId==0）返回 0。 */
+    quint32 kittyImageHandle(quint32 clientId) const;
+    /** @brief 是否已落库 clientId 对应的 kitty 图像。 */
+    bool hasKittyImage(quint32 clientId) const { return kittyImageHandle(clientId) != 0; }
+
+    /**
+     * @brief 在当前光标位置放置一张已落库图像（a=T 的显示步骤 / a=p）。
+     * @param imageHandle 内部图像句柄（kittyImageHandle() 或 kittyStoreImage() 返回值）。
+     * @param clientId 客户端图像 id（匿名图像传 0；用于 (i,p) 替换语义与应答回显）。
+     * @param params 放置参数；c/r 缺省按源矩形与单元格尺寸推算。
+     * @param placementHandleOut 非空时返回放置句柄。
+     * @param colsUsed/rowsUsed 非空时返回实际使用的显示区（供执行层移动光标）。
+     * @note 同 (i≠0, p≠0) 重复放置视为替换（先删旧放置）；p=0 且 i≠0 多次放置并存；
+     *       行引用挂在覆盖的每一行上，滚动/清行/resize/复位由共享挂钩管理；
+     *       本函数不移动文本光标（kitty 光标语义由执行层按 C= 决定）。
+     */
+    KittyPlaceError kittyPlace(quint32 imageHandle, quint32 clientId,
+                               const KittyPlacementParams &params,
+                               quint32 *placementHandleOut = nullptr,
+                               int *colsUsed = nullptr, int *rowsUsed = nullptr);
+
+    /** @brief d=a/A：删除全部可见放置；freeData 时连同释放无引用图像数据。 */
+    void kittyDeleteAll(bool freeData);
+    /**
+     * @brief d=i/I（+p=）：删除 clientId 图像的放置；placementId≠0 时只删该 (i,p) 放置。
+     * @param freeData true（大写 I）时连同释放无其他引用（含回看历史）的图像数据。
+     */
+    void kittyDeleteByImage(quint32 clientId, quint32 placementId, bool freeData);
+    /** @brief d=c/C：删除与当前光标单元格相交的放置；freeData 语义同上。 */
+    void kittyDeleteAtCursor(bool freeData);
+
+    /**
+     * @brief 返回绝对行 @p absoluteLine（历史行 + 屏幕行统一编号）上的 kitty 放置引用表。
+     * @return 引用表副本；该行无放置或行号越界时为空。
+     */
+    QVector<KittyPlacementRef> kittyRefs(int absoluteLine) const;
+
+    /** @brief 返回放置句柄对应的放置参数；无效句柄（已回收）返回 nullptr。 */
+    const KittyPlacement *kittyPlacement(quint32 placementHandle) const;
 
     /** Clear the entire screen and move the cursor to the home position.
      * Equivalent to calling clearEntireScreen() followed by home().
@@ -825,6 +934,30 @@ private:
     int _cellPixelWidth = 0;                 // 单元格像素宽（0 = 未同步）
     int _cellPixelHeight = 0;                // 单元格像素高（0 = 未同步，用兜底值）
     bool _graphicsDirty = false;             // 图像锚定/清空后需显示层整屏补刷一次
+
+    /** @brief 未同步字体度量时的兜底单元格像素宽（常见等宽字体量级）。 */
+    static constexpr int DEFAULT_CELL_PIXEL_WIDTH = 8;
+
+    // kitty 放置 ----------------
+    // 与 sixel 行引用同构的平行表：行级稀疏引用 + 放置句柄引用计数；
+    // 行引用随行清除/滚出/丢弃而销毁，计数归零时回收放置；匿名图像随最后放置死亡释放
+    typedef QVector<KittyPlacementRef> KittyRefLine;
+    KittyRefLine *_kittyLines;                  // [lines + 1]，与 screenLines 平行
+    std::deque<KittyRefLine> _historyKittyRefs; // 与 history 行一一对应
+    QHash<quint32, KittyPlacement> _kittyPlacements;   // placementHandle → 放置参数
+    QHash<quint32, int> _kittyPlacementRefs;           // placementHandle → 行引用计数
+    QHash<quint64, quint32> _kittyPlacementKeys;       // (clientId<<32|placementId) → placementHandle
+    QHash<quint32, quint32> _kittyImageHandles;        // clientId(i≠0) → imageHandle
+    QSet<quint32> _kittyAnonymous;                     // 匿名图像（i=0）句柄集
+    QList<quint32> _kittyEvictionOrder;                // kitty 图像落库顺序（预算淘汰用，旧→新）
+    quint32 _nextKittyPlacementHandle = 1;
+    quint64 _nextKittySerial = 1;
+
+    void releaseKittyRefLine(KittyRefLine &row);
+    void removeKittyPlacement(quint32 placementHandle);
+    void removeKittyImage(quint32 imageHandle);
+    bool kittyImageInUse(quint32 imageHandle) const;
+    void evictUnreferencedKittyImages(qint64 bytesNeeded);
 
     /** @brief 累计像素预算：现存图像（sixel/kitty 共用）总字节数上限（256MB，ARGB32 4 字节/像素）。 */
     static constexpr qint64 MAX_IMAGE_BYTES = 256LL * 1024 * 1024;

@@ -60,7 +60,8 @@ Screen::Screen(int l, int c)
             effectiveForeground(CharacterColor()),
             effectiveBackground(CharacterColor()), effectiveRendition(0),
             lastPos(-1), _linkLines(new HyperlinkLine[lines + 1]),
-            _imageLines(new ImageRefLine[lines + 1]) {
+            _imageLines(new ImageRefLine[lines + 1]),
+            _kittyLines(new KittyRefLine[lines + 1]) {
     lineProperties.resize(lines + 1);
     for (int i = 0; i < lines + 1; i++)
             lineProperties[i] = LINE_DEFAULT;
@@ -74,6 +75,7 @@ Screen::~Screen() {
     delete[] screenLines;
     delete[] _linkLines;
     delete[] _imageLines;
+    delete[] _kittyLines;
     delete history;
 }
 
@@ -328,6 +330,15 @@ void Screen::resizeImage(int new_lines, int new_columns) {
         releaseImageLine(_imageLines[i]); // 收缩时被裁行的引用销毁
     delete[] _imageLines;
     _imageLines = newImageLines;
+
+    // kitty 放置引用表数组随屏幕尺寸重建；收缩时被裁行的引用销毁（先 move 再 delete 旧数组）
+    KittyRefLine *newKittyLines = new KittyRefLine[new_lines + 1];
+    for (int i = 0; i < qMin(lines, new_lines + 1); i++)
+        newKittyLines[i] = std::move(_kittyLines[i]);
+    for (int i = qMin(lines, new_lines + 1); i < lines + 1; i++)
+        releaseKittyRefLine(_kittyLines[i]); // 收缩时被裁行的引用销毁
+    delete[] _kittyLines;
+    _kittyLines = newKittyLines;
 
     delete[] screenLines;
     screenLines = newScreenLines;
@@ -964,6 +975,7 @@ void Screen::clearImage(int loca, int loce, char c) {
         lineProperties[y] = 0;
         releaseHyperlinkLine(_linkLines[y]); // 清行连带清除链接段表
         releaseImageLine(_imageLines[y]); // 清行连带销毁图像引用
+        releaseKittyRefLine(_kittyLines[y]); // 清行连带销毁 kitty 放置引用
 
         int endCol = (y == bottomLine) ? loce % columns : columns - 1;
         int startCol = (y == topLine) ? loca % columns : 0;
@@ -997,6 +1009,7 @@ void Screen::moveImage(int dest, int sourceBegin, int sourceEnd) {
         for (int i = 0; i <= lines; i++) {
             releaseHyperlinkLine(_linkLines[(dest / columns) + i]); // 目标行被覆盖，旧段表回收
             releaseImageLine(_imageLines[(dest / columns) + i]); // 目标行被覆盖，旧引用销毁
+            releaseKittyRefLine(_kittyLines[(dest / columns) + i]); // 目标行被覆盖，旧引用销毁
             screenLines[(dest / columns) + i] =
                     screenLines[(sourceBegin / columns) + i];
             lineProperties[(dest / columns) + i] =
@@ -1005,11 +1018,14 @@ void Screen::moveImage(int dest, int sourceBegin, int sourceEnd) {
                     std::move(_linkLines[(sourceBegin / columns) + i]); // 段表随行走（move 防止引用计数双降）
             _imageLines[(dest / columns) + i] =
                     std::move(_imageLines[(sourceBegin / columns) + i]); // 引用随行走（move 防止引用计数双降）
+            _kittyLines[(dest / columns) + i] =
+                    std::move(_kittyLines[(sourceBegin / columns) + i]); // 引用随行走
         }
     } else {
         for (int i = lines; i >= 0; i--) {
             releaseHyperlinkLine(_linkLines[(dest / columns) + i]); // 目标行被覆盖，旧段表回收
             releaseImageLine(_imageLines[(dest / columns) + i]); // 目标行被覆盖，旧引用销毁
+            releaseKittyRefLine(_kittyLines[(dest / columns) + i]); // 目标行被覆盖，旧引用销毁
             screenLines[(dest / columns) + i] =
                     screenLines[(sourceBegin / columns) + i];
             lineProperties[(dest / columns) + i] =
@@ -1018,6 +1034,8 @@ void Screen::moveImage(int dest, int sourceBegin, int sourceEnd) {
                     std::move(_linkLines[(sourceBegin / columns) + i]); // 段表随行走（move 防止引用计数双降）
             _imageLines[(dest / columns) + i] =
                     std::move(_imageLines[(sourceBegin / columns) + i]); // 引用随行走（move 防止引用计数双降）
+            _kittyLines[(dest / columns) + i] =
+                    std::move(_kittyLines[(sourceBegin / columns) + i]); // 引用随行走
         }
     }
 
@@ -1391,6 +1409,18 @@ void Screen::addHistLine() {
         }
         _imageLines[0].clear();
 
+        // kitty 放置引用随行进入 scrollback；历史满丢弃最旧行时同步销毁其引用
+        if (newHistLines > oldHistLines) {
+            _historyKittyRefs.push_back(std::move(_kittyLines[0]));
+        } else if (oldHistLines > 0) {
+            releaseKittyRefLine(_historyKittyRefs.front());
+            _historyKittyRefs.pop_front();
+            _historyKittyRefs.push_back(std::move(_kittyLines[0]));
+        } else {
+            releaseKittyRefLine(_kittyLines[0]); // 防御：历史容量为零时直接销毁
+        }
+        _kittyLines[0].clear();
+
         bool beginIsTL = (selBegin == selTopLeft);
 
         // If the history is full, increment the count
@@ -1601,7 +1631,311 @@ void Screen::clearAllImages()
     _images.clear();
     _imageRefs.clear();
     _imageBytes = 0;
+    // kitty 放置表同步清空（图像数据同表同预算，已由上方清理）
+    for (int i = 0; i < lines + 1; i++)
+        _kittyLines[i].clear();
+    _historyKittyRefs.clear();
+    _kittyPlacements.clear();
+    _kittyPlacementRefs.clear();
+    _kittyPlacementKeys.clear();
+    _kittyImageHandles.clear();
+    _kittyAnonymous.clear();
+    _kittyEvictionOrder.clear();
     _graphicsDirty = true; // 图像消失同样需要补刷
+}
+
+quint32 Screen::kittyImageHandle(quint32 clientId) const
+{
+    if (clientId == 0)
+        return 0; // 匿名图像不占 id 命名空间
+    const auto it = _kittyImageHandles.constFind(clientId);
+    return it == _kittyImageHandles.constEnd() ? 0 : it.value();
+}
+
+bool Screen::kittyImageInUse(quint32 imageHandle) const
+{
+    for (const KittyPlacement &pl : _kittyPlacements)
+        if (pl.imageHandle == imageHandle)
+            return true;
+    return false;
+}
+
+void Screen::removeKittyImage(quint32 imageHandle)
+{
+    const auto it = _images.find(imageHandle);
+    if (it == _images.end())
+        return;
+    _imageBytes -= qint64(it->image.width()) * it->image.height() * 4;
+    _images.erase(it);
+    _kittyAnonymous.remove(imageHandle);
+    _kittyEvictionOrder.removeOne(imageHandle);
+    // _kittyImageHandles 的反查清理由调用方负责（kittyDeleteByImage 已知 clientId）
+    for (auto hit = _kittyImageHandles.begin(); hit != _kittyImageHandles.end(); ++hit) {
+        if (hit.value() == imageHandle) {
+            _kittyImageHandles.erase(hit);
+            break;
+        }
+    }
+    _graphicsDirty = true;
+}
+
+void Screen::evictUnreferencedKittyImages(qint64 bytesNeeded)
+{
+    // 预算紧张时优先淘汰无放置引用的 kitty 图像（上游建议行为），最旧的先淘汰
+    for (int i = 0; i < _kittyEvictionOrder.size() && _imageBytes + bytesNeeded > MAX_IMAGE_BYTES;) {
+        const quint32 handle = _kittyEvictionOrder.at(i);
+        if (!kittyImageInUse(handle)) {
+            removeKittyImage(handle); // 内部 removeOne 保持 i 指向下一元素
+        } else {
+            i++;
+        }
+    }
+}
+
+bool Screen::kittyStoreImage(const QImage &image, quint32 clientId, quint32 *handleOut)
+{
+    if (image.isNull())
+        return false;
+    const qint64 bytes = qint64(image.width()) * image.height() * 4;
+    if (_imageBytes + bytes > MAX_IMAGE_BYTES)
+        evictUnreferencedKittyImages(bytes);
+    if (_imageBytes + bytes > MAX_IMAGE_BYTES)
+        return false; // 淘汰后仍超限：失败（调用方回 ENOSPC）
+    const quint32 handle = _nextImageHandle++;
+    _images.insert(handle, ScreenImage {image, false});
+    _imageBytes += bytes;
+    if (clientId != 0)
+        _kittyImageHandles.insert(clientId, handle);
+    else
+        _kittyAnonymous.insert(handle);
+    _kittyEvictionOrder.append(handle);
+    if (handleOut)
+        *handleOut = handle;
+    return true;
+}
+
+KittyPlaceError Screen::kittyPlace(quint32 imageHandle, quint32 clientId,
+                                   const KittyPlacementParams &params,
+                                   quint32 *placementHandleOut, int *colsUsed, int *rowsUsed)
+{
+    const auto imgIt = _images.constFind(imageHandle);
+    if (imgIt == _images.constEnd())
+        return KittyPlaceError::NoSuchImage;
+    const QImage &img = imgIt->image;
+    const int cellW = _cellPixelWidth > 0 ? _cellPixelWidth : DEFAULT_CELL_PIXEL_WIDTH;
+    const int cellH = _cellPixelHeight > 0 ? _cellPixelHeight : DEFAULT_CELL_PIXEL_HEIGHT;
+    // X/Y 必须小于单元格尺寸（协议约束）
+    if (params.cellXOff < 0 || params.cellXOff >= cellW
+            || params.cellYOff < 0 || params.cellYOff >= cellH)
+        return KittyPlaceError::InvalidArgument;
+    // 源矩形：缺省整图，与源图取交；取交为空则非法
+    const QRect src = QRect(params.srcX, params.srcY,
+                            params.srcW > 0 ? params.srcW : img.width(),
+                            params.srcH > 0 ? params.srcH : img.height()) & img.rect();
+    if (src.isEmpty())
+        return KittyPlaceError::InvalidArgument;
+    // 显示区：缺省按源矩形原始尺寸换算单元格数（向上取整）；只给一个按宽高比推算
+    int cols = params.cols;
+    int rows = params.rows;
+    if (cols <= 0 && rows <= 0) {
+        cols = qMax(1, (src.width() + cellW - 1) / cellW);
+        rows = qMax(1, (src.height() + cellH - 1) / cellH);
+    } else if (cols <= 0) {
+        cols = qMax(1, int((qint64(src.width()) * rows * cellW + qint64(src.height()) * cellH - 1)
+                           / (qint64(src.height()) * cellH)));
+    } else if (rows <= 0) {
+        rows = qMax(1, int((qint64(src.height()) * cols * cellH + qint64(src.width()) * cellW - 1)
+                           / (qint64(src.width()) * cellW)));
+    }
+
+    // 同 (i≠0, p≠0) 重复放置 = 替换（可无闪烁移动/缩放）：先删旧放置
+    if (clientId != 0 && params.placementId != 0) {
+        const quint64 key = (quint64(clientId) << 32) | params.placementId;
+        const auto it = _kittyPlacementKeys.constFind(key);
+        if (it != _kittyPlacementKeys.constEnd())
+            removeKittyPlacement(it.value());
+    }
+
+    KittyPlacement pl;
+    pl.imageHandle = imageHandle;
+    pl.imageId = clientId;
+    pl.placementId = params.placementId;
+    pl.anchorLine = history->getLines() + cuY;
+    pl.col = cuX;
+    pl.cols = cols;
+    pl.rows = rows;
+    pl.srcX = src.x();
+    pl.srcY = src.y();
+    pl.srcW = src.width();
+    pl.srcH = src.height();
+    pl.cellXOff = params.cellXOff;
+    pl.cellYOff = params.cellYOff;
+    pl.zIndex = params.zIndex;
+    pl.serial = _nextKittySerial++;
+
+    const quint32 handle = _nextKittyPlacementHandle++;
+    _kittyPlacements.insert(handle, pl);
+    _kittyPlacementRefs.insert(handle, 0);
+    if (clientId != 0 && params.placementId != 0)
+        _kittyPlacementKeys.insert((quint64(clientId) << 32) | params.placementId, handle);
+
+    // 行级引用挂在放置覆盖的每一行（越下缘截断；滚动/清行/resize/复位由共享挂钩管理）
+    for (int i = 0; i < rows && cuY + i < lines; i++) {
+        _kittyLines[cuY + i].append({handle, i});
+        _kittyPlacementRefs[handle]++;
+    }
+    _graphicsDirty = true;
+    if (placementHandleOut)
+        *placementHandleOut = handle;
+    if (colsUsed)
+        *colsUsed = cols;
+    if (rowsUsed)
+        *rowsUsed = rows;
+    return KittyPlaceError::Ok;
+}
+
+void Screen::releaseKittyRefLine(KittyRefLine &row)
+{
+    if (row.isEmpty())
+        return;
+    _graphicsDirty = true; // 放置（部分）消失，字符层无变化，需显示层补刷
+    for (const KittyPlacementRef &ref : row) {
+        auto it = _kittyPlacementRefs.find(ref.placementHandle);
+        if (it == _kittyPlacementRefs.end())
+            continue;
+        if (--it.value() > 0)
+            continue;
+        // 全部行引用销毁：回收放置；匿名图像随最后放置死亡释放
+        _kittyPlacementRefs.erase(it);
+        const auto plIt = _kittyPlacements.find(ref.placementHandle);
+        if (plIt == _kittyPlacements.end())
+            continue;
+        const quint32 imageHandle = plIt->imageHandle;
+        const quint64 key = (quint64(plIt->imageId) << 32) | plIt->placementId;
+        _kittyPlacements.erase(plIt);
+        _kittyPlacementKeys.remove(key);
+        if (_kittyAnonymous.contains(imageHandle) && !kittyImageInUse(imageHandle))
+            removeKittyImage(imageHandle);
+    }
+    row.clear();
+}
+
+void Screen::removeKittyPlacement(quint32 placementHandle)
+{
+    // 显式删除：从全部行（屏幕 + 回看历史）剥离该放置的引用。
+    // 引用随滚动迁移（moveImage/addHistLine 挂钩），故只能全表扫描；删除为低频操作
+    for (int i = 0; i < lines + 1; i++) {
+        KittyRefLine &row = _kittyLines[i];
+        for (int j = row.size() - 1; j >= 0; j--) {
+            if (row[j].placementHandle == placementHandle) {
+                KittyPlacementRef ref = row.takeAt(j);
+                auto it = _kittyPlacementRefs.find(ref.placementHandle);
+                if (it != _kittyPlacementRefs.end() && --it.value() <= 0)
+                    _kittyPlacementRefs.erase(it);
+            }
+        }
+    }
+    for (KittyRefLine &row : _historyKittyRefs) {
+        for (int j = row.size() - 1; j >= 0; j--) {
+            if (row[j].placementHandle == placementHandle) {
+                KittyPlacementRef ref = row.takeAt(j);
+                auto it = _kittyPlacementRefs.find(ref.placementHandle);
+                if (it != _kittyPlacementRefs.end() && --it.value() <= 0)
+                    _kittyPlacementRefs.erase(it);
+            }
+        }
+    }
+    const auto plIt = _kittyPlacements.find(placementHandle);
+    if (plIt == _kittyPlacements.end())
+        return;
+    const quint32 imageHandle = plIt->imageHandle;
+    const quint64 key = (quint64(plIt->imageId) << 32) | plIt->placementId;
+    _kittyPlacements.erase(plIt);
+    _kittyPlacementKeys.remove(key);
+    _graphicsDirty = true;
+    // 匿名图像（i=0）无其他引用时释放；命名图像数据由 d 大写变体/重传/淘汰管理
+    if (_kittyAnonymous.contains(imageHandle) && !kittyImageInUse(imageHandle))
+        removeKittyImage(imageHandle);
+}
+
+void Screen::kittyDeleteAll(bool freeData)
+{
+    // 收集当前全部放置句柄后逐个删除（removeKittyPlacement 内部维护引用计数）
+    const auto handles = _kittyPlacements.keys();
+    for (const quint32 handle : handles)
+        removeKittyPlacement(handle);
+    if (freeData) {
+        // 大写 A：连同释放无引用图像数据（此时 kitty 图像均已无放置）
+        const auto clientIds = _kittyImageHandles.keys();
+        for (const quint32 clientId : clientIds)
+            removeKittyImage(_kittyImageHandles.value(clientId));
+        const auto anonymous = _kittyAnonymous.values();
+        for (const quint32 handle : anonymous)
+            removeKittyImage(handle);
+    }
+}
+
+void Screen::kittyDeleteByImage(quint32 clientId, quint32 placementId, bool freeData)
+{
+    const quint32 imageHandle = kittyImageHandle(clientId);
+    if (imageHandle == 0)
+        return;
+    if (placementId != 0) {
+        const quint64 key = (quint64(clientId) << 32) | placementId;
+        const auto it = _kittyPlacementKeys.constFind(key);
+        if (it != _kittyPlacementKeys.constEnd())
+            removeKittyPlacement(it.value());
+    } else {
+        // 删除该图像全部放置（含匿名放置；先收集句柄避免迭代中改表）
+        QList<quint32> handles;
+        for (auto it = _kittyPlacements.constBegin(); it != _kittyPlacements.constEnd(); ++it)
+            if (it->imageId == clientId)
+                handles.append(it.key());
+        for (const quint32 handle : handles)
+            removeKittyPlacement(handle);
+    }
+    // 大写 I：连同释放无其他引用（含回看历史中的引用）的图像数据
+    if (freeData && !kittyImageInUse(imageHandle))
+        removeKittyImage(imageHandle);
+}
+
+void Screen::kittyDeleteAtCursor(bool freeData)
+{
+    const KittyRefLine row = _kittyLines[cuY]; // 副本：删除过程会改原行
+    QList<quint32> imageHandles;
+    for (const KittyPlacementRef &ref : row) {
+        const KittyPlacement *pl = kittyPlacement(ref.placementHandle);
+        if (!pl)
+            continue;
+        // 与光标单元格相交：行匹配（引用在本行即匹配），列落在放置覆盖区间内
+        if (cuX >= pl->col && cuX < pl->col + pl->cols) {
+            imageHandles.append(pl->imageHandle);
+            removeKittyPlacement(ref.placementHandle);
+        }
+    }
+    if (freeData)
+        for (const quint32 imageHandle : imageHandles)
+            if (!kittyImageInUse(imageHandle))
+                removeKittyImage(imageHandle);
+}
+
+QVector<KittyPlacementRef> Screen::kittyRefs(int absoluteLine) const
+{
+    const int histLines = history->getLines();
+    if (absoluteLine < 0 || absoluteLine >= histLines + lines)
+        return {};
+    if (absoluteLine < histLines) {
+        if (absoluteLine < static_cast<int>(_historyKittyRefs.size()))
+            return _historyKittyRefs[absoluteLine];
+        return {};
+    }
+    return _kittyLines[absoluteLine - histLines];
+}
+
+const KittyPlacement *Screen::kittyPlacement(quint32 placementHandle) const
+{
+    const auto it = _kittyPlacements.constFind(placementHandle);
+    return it == _kittyPlacements.constEnd() ? nullptr : &it.value();
 }
 
 int Screen::getHistLines() const { return history->getLines(); }
@@ -1623,6 +1957,10 @@ void Screen::setScroll(const HistoryType &t, bool copyPreviousScroll) {
         for (ImageRefLine &row : _historyImages)
             releaseImageLine(row);
         _historyImages.clear();
+        // 历史整体废弃（clearHistory）：同步销毁历史 kitty 放置引用
+        for (KittyRefLine &row : _historyKittyRefs)
+            releaseKittyRefLine(row);
+        _historyKittyRefs.clear();
     }
 }
 
