@@ -1364,6 +1364,16 @@ void TerminalDisplay::updateImage() {
     char *dirtyMask = new char[columnsToUpdate + 2];
     QRegion dirtyRegion;
 
+    // sixel 图像切片不占字符单元格，逐格脏区比对感知不到它：视图滚动（回看历史）
+    // 不改 Screen 字符状态、不置图形脏标志，字符内容相同的行会被判干净，造成旧
+    // 位置图像切片残留、新位置切片缺失。这里记录滚动前后两个视图的顶行，供循环内
+    // 对实际含图像放置的行强制置脏；无图时由 hasImages() 短路，无逐行查询开销。
+    Screen *const scr = _screenWindow->screen();
+    const bool hasImages = scr && scr->hasImages();
+    const int viewTopLine = _screenWindow->currentLine();
+    const int prevViewTopLine = _imageViewTopLine;
+    _imageViewTopLine = viewTopLine;
+
     // debugging variable, this records the number of lines that are found to
     // be 'dirty' ( ie. have changed from the old _image to the new _image ) and
     // which therefore need to be repainted
@@ -1407,6 +1417,15 @@ void TerminalDisplay::updateImage() {
             }
         }
 
+        // 滚动前后两个视图中实际含 sixel 图像放置的行强制整行标脏：
+        // 新视图含图行补画切片，滚动前视图含图行抹除残留切片
+        if (hasImages && !updateLine
+                && (!scr->imagePlacements(viewTopLine + y).isEmpty()
+                    || (prevViewTopLine != viewTopLine
+                        && !scr->imagePlacements(prevViewTopLine + y).isEmpty()))) {
+            updateLine = true;
+        }
+
         // if the characters on the line are different in the old and the new _image
         // then this line must be repainted.
         if (updateLine) {
@@ -1445,7 +1464,7 @@ void TerminalDisplay::updateImage() {
 
     // sixel 图像锚定/销毁不改动字符单元格，逐格脏区比对感知不到；
     // Screen 置位图形脏标志时把已用区域整体标脏补刷一次（低频事件，代价可接受）
-    if (Screen *scr = _screenWindow->screen(); scr && scr->graphicsDirty()) {
+    if (scr && scr->graphicsDirty()) {
         dirtyRegion |= QRect(_leftMargin + tLx, _topMargin + tLy,
                              _fontWidth * _usedColumns, _fontHeight * _usedLines);
         scr->clearGraphicsDirty();

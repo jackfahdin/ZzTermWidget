@@ -406,6 +406,14 @@ public:
     /** @brief 清除图形脏标志（显示层取走后调用）。 */
     void clearGraphicsDirty() { _graphicsDirty = false; }
 
+    /**
+     * @brief 廉价查询当前是否存在任何 sixel 图像。
+     * @return 像素表非空（即有存活图像放置）时为 true。
+     * @note 显示层视图滚动时据此短路：无图则跳过逐行放置表查询。
+     *       像素表与行放置表同生共死（引用计数归零即回收），O(1) 无需额外维护。
+     */
+    bool hasImages() const { return !_sixelImages.isEmpty(); }
+
     /** Clear the entire screen and move the cursor to the home position.
      * Equivalent to calling clearEntireScreen() followed by home().
      */

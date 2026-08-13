@@ -910,6 +910,9 @@ private:
     int _imageSize;
     QVector<LineProperty> _lineProperties;
 
+    /** @brief 上一次 updateImage() 时的视图顶行（绝对行号）；sixel 含图行强制置脏用。 */
+    int _imageViewTopLine = 0;
+
     ColorEntry _colorTable[TABLE_COLORS];
 
     bool _resizing;

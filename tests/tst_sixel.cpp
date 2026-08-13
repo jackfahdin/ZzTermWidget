@@ -1,12 +1,31 @@
 #include <QtTest>
 
 #include <QFontDatabase>
+#include <QPaintEvent>
 
 #include "SixelDecoder.h"
 #include "Vt102Emulation.h"
 #include "ScreenWindow.h"
 #include "Screen.h"
 #include "TerminalDisplay.h"
+
+/**
+ * @brief 记录 paintEvent 送达的重绘区域，作为 updateImage() 脏区计算的观察点。
+ * @note 真实窗口系统只按脏区增量重绘；本类在 offscreen 平台下累积 paintEvent
+ *       区域，用于断言"视图滚动后含图行被强制标脏"。
+ */
+class DirtyProbeDisplay : public TerminalDisplay
+{
+public:
+    QRegion painted; ///< 自上次清零以来 paintEvent 覆盖的累积区域
+
+protected:
+    void paintEvent(QPaintEvent *ev) override
+    {
+        painted |= ev->region();
+        TerminalDisplay::paintEvent(ev);
+    }
+};
 
 /**
  * @brief Sixel 解码器的纯逻辑单测（无终端状态，直接喂 data 段断言 QImage）。
@@ -27,6 +46,7 @@ private slots:
     void testDimensionCapRejects();
     void testInvalidDataRejectedOrIgnored();
     void testDisplayPaintsImageUnderText();
+    void testViewScrollMarksImageRowsDirty();
 };
 
 /**
@@ -214,6 +234,71 @@ void TestSixel::testDisplayPaintsImageUnderText()
     for (int y = 0; y < cleared.height(); y++)
         for (int x = 0; x < cleared.width(); x++)
             QVERIFY(!isRed(cleared.pixelColor(x, y)));
+}
+
+/**
+ * @brief 视图回滚（回看历史）后，滚动前后两个视图中的含图行都必须进入重绘区域。
+ * @note 回归测试：空行字符在滚动前后完全一致，逐格脏区比对必然判干净；
+ *       若 updateImage() 不对 imagePlacements 非空的行强制置脏，
+ *       旧位置图像切片残留、新位置切片缺失（本测试断言的 painted 区域将不含这些行）。
+ */
+void TestSixel::testViewScrollMarksImageRowsDirty()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    DirtyProbeDisplay display;
+    initSixelRenderEnv(emu, win, display);
+    display.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&display));
+
+    // Screen 默认无回滚缓冲（HistoryScrollNone），显式开启内存历史以制造可回滚视图
+    win->screen()->setScroll(HistoryTypeBuffer(1000));
+
+    // 灌 60 个空行制造可回滚历史（空行字符一致，滚动后字符比对判不出脏）
+    const QByteArray blanks = QByteArray("\n").repeated(60);
+    emu.receiveData(blanks.constData(), int(blanks.size()));
+
+    // 在屏幕底部锚定 8x18 纯红图（约占 2 个网格行，随滚动可入历史）
+    const QByteArray seq = QByteArray("\033Pq#0;2;100;0;0#0!8~-!8~-!8~\033\\");
+    emu.receiveData(seq.constData(), int(seq.size()));
+
+    // 基线重绘落账后清零，只观察滚动引起的增量重绘
+    display.updateImage();
+    QCoreApplication::processEvents();
+
+    // 显式把视图滚到底部（等价 trackOutput 落定后的稳态，避免依赖攒批定时器）
+    win->scrollTo(win->lineCount() - win->windowLines());
+    display.updateImage();
+    QCoreApplication::processEvents();
+    display.painted = QRegion();
+
+    Screen *scr = win->screen();
+    const int oldTop = win->currentLine();
+    QVERIFY(oldTop > 0); // 确有历史可回滚
+
+    // 视图回滚 1 行（等价 scrollBar 路径的 scrollTo）：不改 Screen 字符状态
+    win->scrollBy(ScreenWindow::ScrollLines, -1);
+    QCOMPARE(win->currentLine(), oldTop - 1);
+    display.updateImage();
+    QCoreApplication::processEvents();
+
+    // 断言：新视图含图行（补画切片）与滚动前视图含图行（抹除残留）都在重绘区域内。
+    // 行像素几何与 updateImage() 的脏行矩形同源：上边距 + 行号 * 行高
+    const int fh = display.fontHeight();
+    const int rowTop = display.contentsRect().top() + display.margin();
+    const int newTop = win->currentLine();
+    int checkedRows = 0;
+    for (int y = 0; y < win->windowLines(); y++) {
+        const bool inNewView = !scr->imagePlacements(newTop + y).isEmpty();
+        const bool inOldView = !scr->imagePlacements(oldTop + y).isEmpty();
+        if (!inNewView && !inOldView)
+            continue;
+        checkedRows++;
+        const QRect band(0, rowTop + fh * y, display.width(), fh);
+        QVERIFY2(display.painted.intersects(band),
+                 qPrintable(QStringLiteral("含图视图行 %1 未被标脏重绘").arg(y)));
+    }
+    QVERIFY(checkedRows >= 2); // 图像占行 + 滚动前视图行，须确有断言发生（防空断言）
 }
 
 QTEST_MAIN(TestSixel)
