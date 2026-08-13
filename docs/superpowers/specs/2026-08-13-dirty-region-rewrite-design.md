@@ -9,7 +9,7 @@
 轮 4 把重绘耗时压掉 77%，但 `updateImage()` 的脏区粒度仍是**整行**：任何一个字符格变脏，整行（`_fontWidth × columnsToUpdate`）都进 `dirtyRegion`（TerminalDisplay.cpp:1434-1442）。两类场景仍有浪费：
 
 - **TUI 局部刷新**：光标移动、时钟跳动、进度条更新——每帧只动几格，却整行重绘。
-- **整屏滚动吞吐**：持续输出时整屏内容不变只是上移，逐格比对 + 全量重绘是纯浪费；`ScreenWindow` 已有 `scrollCount()`/`scrollRegion()`/`resetScrollCount()` 滚动量报告机制（上游 konsole 同款优化的基础设施），当前未被绘制层利用。
+- **整屏滚动吞吐**：持续输出时整屏内容不变只是上移。`scrollImage()` 已有像素搬迁与 `_image` 移位（经 `ScreenWindow::scrollCount()`/`scrollRegion()` 驱动），但已移位行仍走一遍逐格比对——纯浪费；新增快路径跳过这段重复比对。
 
 目标：局部刷新只画脏跨度，纯滚动走像素搬迁，两场景都有 benchmark 证据。
 
@@ -19,7 +19,7 @@
 
 1. **基准口径修正**：tst_benchmark TUI 用例改真实路径计量（updateImage + paintEvent 离屏执行），新增"局部刷新"与"整屏滚动"双场景基线。
 2. **行内跨度级脏区**：dirtyMask 逐格结果聚合为每行脏跨度 `[minX, maxX]`（±1 格扩展），dirtyRect 只盖跨度。
-3. **滚动像素搬迁**：纯整屏滚动时 `QWidget::scroll()` 搬像素 + 仅新入行走脏区比对；保守回退。
+3. **滚动快路径**：纯整屏滚动时复用既有 `scrollImage()` 像素搬迁，moved 行跳过重复比对（仅错位检测 + memcpy 同步）；保守回退。
 
 明确不做（YAGNI）：
 
@@ -49,12 +49,13 @@
 - 风险与对策：轮 6 F2 的逐 rect `setClipRect` 叠加跨度脏区后，干净格字形越界进入脏区会被裁掉不复绘。±1 格扩展为第一道防线；`tst_rendering` 双路径逐像素比对为强制验证——若发现不足，升级为 `QFontMetrics::overhang()` 像素级扩展（规格内预留此升级路径，实施时以像素比对结果裁决）。
 - drawContents 零改动（按 rect 逐格绘制的既有行为天然适配）。
 
-### 3.3 滚动像素搬迁
+### 3.3 滚动像素搬迁（快路径）
 
-- 检测：`updateImage` 前后经 `ScreenWindow::scrollCount()`（配 `resetScrollCount()`）获知本次更新的纯滚动行数 N；仅当滚动区等于整个内容区（`scrollRegion()` 覆盖全屏）且满足全部回退条件否定时才启用。
-- 执行：`QWidget::scroll(0, -N×_fontHeight, 内容区rect)` 搬迁像素；新进 N 行走 3.2 的跨度级脏区比对重绘；`_image` 缓存行同步移位（保持既有 memcpy 同步语义）。
+- 既有事实（计划勘察修正）：`updateImage()` 入口已调 `scrollImage(scrollCount(), scrollRegion())` 并 `resetScrollCount()`——像素搬迁（`QWidget::scroll()`）与 `_image` memmove 移位是**既有行为**，纯滚动帧的脏区本就只含新进 N 行。本轮新增面 = **moved 行跳过重复比对**的纯性能快路径，无可观测行为差异。
+- 检测：捕获 `scrollImage` 调用点的滚动量 N；仅当滚动区覆盖全内容区且全部回退条件均不命中时启用。moved 行做逐格错位检测（顺带 RE_BLINK 扫描；`Character` 尾部填充字节使整字 memcmp 不可靠，**必须逐格 `operator!=`**），任一格有滚动外修改即回退全量比对。
+- 执行：快路径命中时 moved 行仅 memcpy 同步（保持 `_image` 字节镜像语义），新进 N 行走 3.2 跨度级脏区比对。
 - 保守回退（任一命中即回退现有全量路径）：
-  - 存在图像放置（`hasImages()`）、活动选区、双高行、备选屏切换帧、`_resizing`、跨度比对窗口与滚动量错位（内容有滚动外修改）。
+  - 存在图像放置（`hasImages()`）或 `graphicsDirty()`、活动选区、双高行、备选屏切换帧（`_lastImageScreen` 指针变化检测，`ScreenWindow::setScreen` 不重置滚动计数）、`_resizing`、收缩区、错位检测发现滚动外修改。
 - 内部开关：`setScrollOptimizationEnabled(bool)`（默认开），镜像轮 4 `setTextBatchingEnabled` 模式，供 benchmark A/B 与故障回退；内部接口，不进公共头。
 
 ### 3.4 数据流
@@ -62,7 +63,7 @@
 ```
 Emulation 输出 → ScreenWindow（scrollCount 累积）
              → TerminalDisplay::updateImage：
-                 纯滚动？ → QWidget::scroll 搬像素 + 新进 N 行跨度比对
+                 纯滚动？ → 既有 scrollImage 搬像素 + moved 行错位检测（快路径）+ 新进 N 行跨度比对
                  否则     → 逐行逐格比对 → 跨度 dirtyRect → update(dirtyRegion)
              → paintEvent 逐 rect（轮 6 裁剪）→ drawBackground/图像/drawContents
 ```
