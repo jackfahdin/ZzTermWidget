@@ -145,3 +145,5 @@ APC 字节流 → Vt102Emulation APC 累积通道（新增，镜像 DCS 通道�
 - 非等宽字体下图像 x 坐标与文本不对齐（终端惯例等宽，与 sixel 轮一致）。
 - 动画、Unicode 占位符、相对放置、图像编号 `I=`、t=f/t/s 传输介质、其余删除变体：待后续轮次按需求启动。
 - z-index 低于 INT32_MIN/2 沉入非默认背景单元格之下的细分档未实现。
+- 放置跨越 DECSTBM 滚动区边界（或被 insertLine/deleteLine 切割）时行一致性破裂：
+  kitty 整图画法可能错位（sixel 逐行切片无此问题）；根治方向是 kitty 绘制改逐行水平带切片。

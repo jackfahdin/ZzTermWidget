@@ -9,6 +9,8 @@ ZzQTermWidget Kitty 图形协议（核心子集） / 2026-08-13
    行级引用、六个生命周期挂钩与 256MB 像素预算；预算紧张时优先淘汰无放置引用的图像
    （仅单块命令超限时淘汰后重试一次；多块命令末块超限负载不可重放，直接回 ENOSPC）。
  * 资源防护：单条 APC 数据流上限 350MB、单图宽/高上限 10000 像素。
+ * 已知遗留：kitty 放置跨越 DECSTBM 滚动区边界（或被 insertLine/deleteLine 切割）时
+   行一致性破裂，整图画法可能错位（sixel 逐行切片无此问题），根治方向为逐行水平带切片。
  * 明确不做：动画（a=f/a=c 回 EINVAL:unsupported action）、Unicode 占位符、
    文件/共享内存传输（t=f/t/s，回 EINVAL:unsupported medium）、相对放置、图像编号 I=。
 
