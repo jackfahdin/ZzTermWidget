@@ -1362,7 +1362,10 @@ void TerminalDisplay::updateImage() {
     const int linesToUpdate = qMin(this->_lines, qMax(0, lines));
     const int columnsToUpdate = qMin(this->_columns, qMax(0, columns));
 
-    char *dirtyMask = new char[columnsToUpdate + 2];
+    // 脏矩形纵向余量：drawCharacters 按 AlignBottom 在格高 + _drawTextAdditionHeight
+    // 的矩形里落字，字形墨迹可越出格子上缘（CJK 字形实测越界 1px）与下缘，行矩形
+    // 脏区盖不住会留残影
+    const int dirtyVSlack = qMax(1, _drawTextAdditionHeight);
     QRegion dirtyRegion;
 
     // sixel/kitty 图像不占字符单元格，逐格脏区比对感知不到它们：视图滚动（回看历史）
@@ -1382,32 +1385,29 @@ void TerminalDisplay::updateImage() {
         const Character *currentLine = &_image[y * this->_columns];
         const Character *const newLine = &newimg[y * columns];
 
-        bool updateLine = false;
-
-        // The dirty mask indicates which characters need repainting. We also
-        // mark surrounding neighbours dirty, in case the character exceeds
-        // its cell boundaries
-        memset(dirtyMask, 0, columnsToUpdate + 2);
-
-        for (x = 0; x < columnsToUpdate; ++x) {
-            if (newLine[x] != currentLine[x]) {
-                dirtyMask[x] = true;
-            }
-        }
-
+        // 跨度聚合：一趟完成逐格比对、blink 扫描与 [minX,maxX] 聚合，取代原 dirtyMask
+        // 两趟扫描与每帧堆分配。脏格邻居不再单独置位，改为出循环后跨度两侧各扩 1 格——
+        // 吸收宽字符尾部变脏与斜体/衬线字形 ±1 格越界（与原 dirtyMask 注释语义一致）
+        int minX = columnsToUpdate;
+        int maxX = -1;
         if (!_resizing) // not while _resizing, we're expecting a paintEvent
             for (x = 0; x < columnsToUpdate; ++x) {
-                if ((newLine[x].rendition & RE_BLINK) != 0) {
+                if ((newLine[x].rendition & RE_BLINK) != 0)
                     _hasBlinker = true;
-                }
-
-                // 任何脏格都要求整行重绘。改造前此处按样式逐格分组构建文本串，
-                // 但该串从未用于绘制（死代码），且宽字符尾部单独变脏时不置位；
-                // 直接化后脏区只会更大不会更小，重绘正确性不受影响
-                if (dirtyMask[x]) {
-                    updateLine = true;
+                if (newLine[x] != currentLine[x]) {
+                    minX = qMin(minX, x);
+                    maxX = qMax(maxX, x);
                 }
             }
+        else
+            for (x = 0; x < columnsToUpdate; ++x) {
+                if (newLine[x] != currentLine[x]) {
+                    minX = qMin(minX, x);
+                    maxX = qMax(maxX, x);
+                }
+            }
+        bool updateLine = maxX >= 0;
+        bool fullLineDirty = false; // 例外行保持整行脏（行为与改造前一致）
 
         // both the top and bottom halves of double height _lines must always be
         // redrawn although both top and bottom halves contain the same characters,
@@ -1415,28 +1415,48 @@ void TerminalDisplay::updateImage() {
         if (_lineProperties.count() > y) {
             if ((_lineProperties[y] & LINE_DOUBLEHEIGHT) != 0) {
                 updateLine = true;
+                fullLineDirty = true;
             }
         }
 
         // 滚动前后两个视图中实际含图像放置的行强制整行标脏（sixel 切片与 kitty 放置同理）：
-        // 新视图含图行补画，滚动前视图含图行抹除残留
-        if (hasImages && !updateLine
+        // 新视图含图行补画，滚动前视图含图行抹除残留。原实现的 !updateLine 短路只是省查询，
+        // 含图行无论字符脏否最终都整行脏，此处直接判定、行为不变；无图时 hasImages() 短路
+        if (hasImages
                 && (!scr->imagePlacements(viewTopLine + y).isEmpty()
                     || !scr->kittyRefs(viewTopLine + y).isEmpty()
                     || (prevViewTopLine != viewTopLine
                         && (!scr->imagePlacements(prevViewTopLine + y).isEmpty()
                             || !scr->kittyRefs(prevViewTopLine + y).isEmpty())))) {
             updateLine = true;
+            fullLineDirty = true;
         }
 
         // if the characters on the line are different in the old and the new _image
         // then this line must be repainted.
         if (updateLine) {
-            // add the area occupied by this line to the region which needs to be
-            // repainted
-            QRect dirtyRect =
-                    QRect(_leftMargin + tLx, _topMargin + tLy + _fontHeight * y,
-                                _fontWidth * columnsToUpdate, _fontHeight);
+            // 非例外行只重绘脏跨度：两侧各扩 1 格并钳到 [0, columnsToUpdate-1]
+            int spanMin = 0;
+            int spanMax = columnsToUpdate - 1;
+            if (!fullLineDirty) {
+                spanMin = qMax(0, minX - 1);
+                spanMax = qMin(columnsToUpdate - 1, maxX + 1);
+                // 宽字符连排再锚定：同一绘制片段内的连排宽字符按 Qt 字体推进量排布
+                // （CJK 回退字体实测推进 12px ≠ 2 格宽 14px），片段被编辑截断后后续
+                // 宽字符按新片段起点重新定位，旧墨迹可达数格之外；脏跨度须扩到连排末尾
+                auto isWideHead = [&](int i) {
+                    return i + 1 < columnsToUpdate && newLine[i + 1].character == 0;
+                };
+                while (spanMax + 1 < columnsToUpdate
+                       && (isWideHead(spanMax)
+                           || (newLine[spanMax].character == 0 && isWideHead(spanMax + 1))))
+                    ++spanMax;
+            }
+            const QRect dirtyRect =
+                    QRect(_leftMargin + tLx + spanMin * _fontWidth,
+                          _topMargin + tLy + _fontHeight * y - dirtyVSlack,
+                          (spanMax - spanMin + 1) * _fontWidth,
+                          _fontHeight + 2 * dirtyVSlack);
 
             dirtyRegion |= dirtyRect;
         }
@@ -1485,7 +1505,6 @@ void TerminalDisplay::updateImage() {
         _blinkTimer->stop();
         _blinking = false;
     }
-    delete[] dirtyMask;
 }
 
 void TerminalDisplay::showResizeNotification() {

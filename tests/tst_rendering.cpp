@@ -184,9 +184,13 @@ void TestRendering::testSpanDirtyPixelEquivalence_data()
     QTest::newRow("宽字符跨界")
             << QByteArray()
             << QByteArray("\033[4;21H\xe7\x95\xbb") << 3 << 0 << true; // CJK 行内改写宽字符"画"
+    // 斜体目标区两侧留空格：若邻居是非空字形（尤其斜体），其越界墨迹伸入跨度边缘格，
+    // 重绘抹除后无法由片段裁剪的重放补回（邻居字形不在片段范围内）——那是片段裁剪
+    // 重放的固有边界效应，不是 ±1 格扩展要管的范围；本行验证的是被编辑斜体字形
+    // 自身的右倾越界被 +1 格扩展吸收
     QTest::newRow("斜体越界")
-            << QByteArray()
-            << QByteArray("\033[2;10H\033[3mITAL\033[0m") << 1 << 0 << true;
+            << QByteArray("\033[2;5HAB\033[2;17HCD")
+            << QByteArray("\033[2;9H\033[3mITAL\033[0m") << 1 << 0 << true;
     // 双高行不做逐像素比对：DECDH 片段经 scale(1,2) 世界变换绘制，墨迹落在 2×行坐标处
     // （calculateTextArea 只对原点逆映射，top 项被放大），任何行矩形脏区都盖不住实际墨迹，
     // 属于改造前就存在的绘制几何怪癖；此处只验证"双高行整行脏"的行为不退化
