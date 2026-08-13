@@ -1451,6 +1451,22 @@ void TerminalDisplay::updateImage() {
                        && (isWideHead(spanMax)
                            || (newLine[spanMax].character == 0 && isWideHead(spanMax + 1))))
                     ++spanMax;
+                // 斜体邻居越界升级：斜体字形墨迹可越出本格 ±1（右倾为主，左倾字体存在）。
+                // 跨度紧邻邻居带斜体样式时，其伸入跨度边缘格的墨迹会被背景重绘抹除，
+                // 而邻居字形不在片段裁剪范围内、永不被重绘；命中即整行置脏
+                auto italicAt = [&](int i) {
+                    if (i < 0 || i >= columnsToUpdate)
+                        return false;
+                    if ((newLine[i].rendition & RE_ITALIC) != 0)
+                        return true;
+                    // 宽字符尾格不承载字符，样式关联到头格判定
+                    return newLine[i].character == 0 && i > 0
+                           && (newLine[i - 1].rendition & RE_ITALIC) != 0;
+                };
+                if (italicAt(spanMin - 1) || italicAt(spanMax + 1)) {
+                    spanMin = 0;
+                    spanMax = columnsToUpdate - 1;
+                }
             }
             const QRect dirtyRect =
                     QRect(_leftMargin + tLx + spanMin * _fontWidth,
