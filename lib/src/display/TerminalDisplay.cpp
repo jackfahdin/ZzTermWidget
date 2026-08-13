@@ -1723,11 +1723,17 @@ void TerminalDisplay::paintEvent(QPaintEvent *pe) {
 
     const QRegion regToDraw = pe->region() & cr;
     for (auto rect = regToDraw.begin(); rect != regToDraw.end(); rect++) {
+        // 逐 rect 交叉裁剪：QPainter 的裁剪本是整个 event region 并集，跨 rect 的
+        // 半透明 kitty 放置（整图画法）会在每个 rect 轮次重复 alpha 混合（颜色偏深）；
+        // 逐 rect 裁剪保证任一像素本轮只画一次
+        paint.save();
+        paint.setClipRect(*rect, Qt::IntersectClip);
         drawBackground(paint, *rect, _colorTable[DEFAULT_BACK_COLOR].color,
                                      true /* use opacity setting */);
         drawImagesBelowText(paint, *rect); // sixel 图像 + kitty z<0：文本层之下
         drawContents(paint, *rect);
         drawImagesAboveText(paint, *rect); // kitty z>=0：文本层之上、光标之下
+        paint.restore();
     }
     redrawCursorOverImages(paint); // 上层图像盖住光标块时补绘光标
     drawInputMethodPreeditString(paint, preeditRect());

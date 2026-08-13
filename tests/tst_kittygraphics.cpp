@@ -69,6 +69,9 @@ private slots:
     void testChunkInterruptedByNewCommand();
     void testMalformedInputs();
     void testDimensionCap();
+    // 解析器（终轮审查 F3：压缩路径资源防护）
+    void testCompressedBudgetPrecheckBeforeInflate();
+    void testCompressedOversizedPngSizeRejected();
     // Screen 级生命周期（任务 2）
     void testScreenPlaceDefaultsAndRefs();
     void testScreenPlacementSurvivesScrollIntoHistory();
@@ -81,6 +84,8 @@ private slots:
     // 预算淘汰（任务 2 审查补测）
     void testScreenEvictionSkipsPlacedImages();
     void testScreenEvictionLoopExhaustsBudget();
+    // Screen 级生命周期（终轮审查 F1：d=a/A 只删可见放置）
+    void testScreenDeleteAllKeepsHistoryPlacements();
     // 字节流执行（任务 3）
     void testTransmitAndDisplayOkResponse();
     void testResponseEchoesPlacementId();
@@ -93,6 +98,8 @@ private slots:
     void testRetransmitDeletesOldPlacements();
     void testDeleteViaByteStream();
     void testBudgetEnforcementAndEviction();
+    // 字节流执行（终轮审查 F5：APC 中途 ESC 非 '\' 的中止重投）
+    void testApcAbortReinjectsEscapeSequence();
     // 离屏渲染（任务 4）
     void testZNegativeDrawnUnderText();
     void testZPositiveDrawnOverText();
@@ -100,6 +107,8 @@ private slots:
     // 离屏渲染（任务 4 审查修复）
     void testCursorRedrawnOverImages();
     void testPartialRepaintKeepsNonAnchorRows();
+    // 离屏渲染（终轮审查 F2：多 rect 局部重绘不重复 alpha 混合）
+    void testSemiTransparentPaintedOnceAcrossRects();
 };
 
 void TestKittyGraphics::testParseKeysAndDefaults()
@@ -214,8 +223,8 @@ void TestKittyGraphics::testChunkedTransfer()
     KittyGraphicsParser parser;
     KittyGraphicsParser::Result r;
     const QByteArray raw = rgbaPixel(9, 9, 9) + rgbaPixel(8, 8, 8);
-    const QByteArray b64 = raw.toBase64();
-    const int half = b64.size() / 2 * 2; // 保持 4 的倍数切分（本例 16 字节，半长 8）
+    const QByteArray b64 = raw.toBase64(); // 8 字节原始像素 → 12 个 base64 字符
+    const int half = 8; // 首块 8 字符（保持 4 的倍数切分），余 4 字符入续块
     // 首块：全部控制键 + m=1
     QCOMPARE(parser.feed("a=T,f=32,s=2,v=1,i=12,m=1;" + b64.left(half),
                          256LL * 1024 * 1024, r),
@@ -296,6 +305,35 @@ void TestKittyGraphics::testDimensionCap()
                          256LL * 1024 * 1024, r),
              KittyGraphicsParser::Status::Error);
     QCOMPARE(r.errorMessage, QByteArray("image too large"));
+}
+
+void TestKittyGraphics::testCompressedBudgetPrecheckBeforeInflate()
+{
+    KittyGraphicsParser parser;
+    KittyGraphicsParser::Result r;
+    // f=24 + o=z，s*v*4 超预算：解压前预检直接 ENOSPC。
+    // 负载是垃圾数据——若先解压会报 EINVAL decode failed；ENOSPC 证明预检在解压前
+    // （旧实现先解压，最大 10000x10000x4 = 400MB 瞬时分配后才做预算比较）
+    QCOMPARE(parser.feed("a=T,f=24,s=10000,v=10000,i=20,o=z;" + QByteArray("AAAA"),
+                         256LL * 1024 * 1024, r),
+             KittyGraphicsParser::Status::Error);
+    QCOMPARE(r.errorCode, QByteArray("ENOSPC"));
+    QCOMPARE(r.imageId, 20u);
+}
+
+void TestKittyGraphics::testCompressedOversizedPngSizeRejected()
+{
+    KittyGraphicsParser parser;
+    KittyGraphicsParser::Result r;
+    // f=100 + o=z，S 键声称 300MB：S 完全客户端可控，钳制到像素预算量级，
+    // 超限直接 EINVAL image too large，不触发 qUncompress 大分配
+    // （旧实现按 S 分配至多 2GB 后才报 decode failed）
+    QCOMPARE(parser.feed("a=T,f=100,i=21,o=z,S=300000000;" + QByteArray("AAAA"),
+                         256LL * 1024 * 1024, r),
+             KittyGraphicsParser::Status::Error);
+    QCOMPARE(r.errorCode, QByteArray("EINVAL"));
+    QCOMPARE(r.errorMessage, QByteArray("image too large"));
+    QCOMPARE(r.imageId, 21u);
 }
 
 /** @brief 构造纯色 ARGB32 测试图。 */
@@ -510,6 +548,48 @@ void TestKittyGraphics::testScreenEvictionLoopExhaustsBudget()
     QVERIFY(!scr.hasKittyImage(5));
     QVERIFY(!scr.hasKittyImage(4)); // 无引用的图 4 已被淘汰（失败路径也会真淘）
     QVERIFY(scr.hasKittyImage(3));  // 带放置的图 3 始终不动
+}
+
+/**
+ * @brief d=a/A 只删除"屏幕上可见"的放置：锚定在回看历史行的放置保留；
+ *        d=A 释放数据时，仍被历史放置引用的图像不释放。
+ * @note 回归：旧实现 kittyDeleteAll 遍历全部放置表，把滚入历史的放置也删了；
+ *       上游协议原文为 "Delete all placements visible on screen"。
+ */
+void TestKittyGraphics::testScreenDeleteAllKeepsHistoryPlacements()
+{
+    Screen scr(24, 80);
+    scr.setScroll(HistoryTypeBuffer(1000));
+    QVERIFY(scr.kittyStoreImage(solidImage(8, 16, Qt::red), 1));  // 将随滚动进入历史
+    QVERIFY(scr.kittyStoreImage(solidImage(8, 16, Qt::blue), 2)); // 留在可见区
+    quint32 ph1 = 0;
+    QCOMPARE(scr.kittyPlace(scr.kittyImageHandle(1), 1, KittyPlacementParams{}, &ph1),
+             KittyPlaceError::Ok); // 锚定在第 0 行
+    // 30 次 index()：第 0 行滚入回看历史，放置引用随行迁移（绝对行 0 落在历史中）
+    for (int i = 0; i < 30; i++)
+        scr.index();
+    QVERIFY(scr.getHistLines() > 0);
+    QCOMPARE(scr.kittyRefs(0).size(), 1);
+    // 图 2 放置在可见区（index() 后光标位于末行）
+    quint32 ph2 = 0;
+    QCOMPARE(scr.kittyPlace(scr.kittyImageHandle(2), 2, KittyPlacementParams{}, &ph2),
+             KittyPlaceError::Ok);
+    const int absRow2 = scr.getHistLines() + scr.getCursorY();
+    QCOMPARE(scr.kittyRefs(absRow2).size(), 1);
+
+    // d=a：可见放置删除；历史中的放置及其行引用保留
+    scr.kittyDeleteAll(false);
+    QVERIFY(scr.kittyPlacement(ph2) == nullptr);
+    QCOMPARE(scr.kittyRefs(absRow2).size(), 0);
+    QVERIFY(scr.kittyPlacement(ph1) != nullptr); // 历史放置存活
+    QCOMPARE(scr.kittyRefs(0).size(), 1);        // 历史行引用仍在
+    QVERIFY(scr.hasKittyImage(1));
+    QVERIFY(scr.hasKittyImage(2)); // 小写不释放数据
+
+    // d=A：图 1 仍被历史放置引用 → 数据不释放；图 2 已无引用 → 释放
+    scr.kittyDeleteAll(true);
+    QVERIFY(scr.hasKittyImage(1));
+    QVERIFY(!scr.hasKittyImage(2));
 }
 
 /** @brief 初始化仿真器并挂接 sendData 抓取（镜像 tst_emulation 的应答测试写法）。 */
@@ -751,6 +831,30 @@ void TestKittyGraphics::testBudgetEnforcementAndEviction()
     QVERIFY(!scr->hasKittyImage(4));
 }
 
+/**
+ * @brief APC 数据段中途 ESC 后非 '\'：kitty 通道中止丢弃半成品，
+ *        ESC 与当前字节重投主状态机（此处 ESC [ c 触发主 DA 应答）。
+ * @note kitty 独有代码路径（Vt102Emulation::receiveChar 的 _apcEscPending 分支），
+ *       无镜像保护，字节流级回归。
+ */
+void TestKittyGraphics::testApcAbortReinjectsEscapeSequence()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    QByteArray sent;
+    initKittyEmu(emu, win, sent);
+    // APC 累积 "Gi=1" 中途出现 ESC [：通道中止，ESC 与 '[' 重投主状态机，
+    // 随后 'c' 构成 CSI c（主 DA 请求）→ 经 sendData 收到 DA 应答；无 kitty 应答（未达 ST）
+    const QByteArray seq = "\033_Gi=1\033[c";
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray("\033[?1;2c")); // VT100 主 DA 应答
+    // 中止后通道已复位：新 kitty 命令正常处理（i=1 的半成品已丢弃，从未落库 → ENOENT）
+    sent.clear();
+    const QByteArray query = kittySeq("a=p,i=1");
+    emu.receiveData(query.constData(), int(query.size()));
+    QCOMPARE(sent, QByteArray("\033_Gi=1;ENOENT:no such image\033\\"));
+}
+
 /** @brief 构造 kitty 渲染测试环境（镜像 tst_sixel 的 initSixelRenderEnv）。 */
 static void initKittyRenderEnv(Vt102Emulation &emu, ScreenWindow *&win, TerminalDisplay &display)
 {
@@ -982,6 +1086,63 @@ void TestKittyGraphics::testPartialRepaintKeepsNonAnchorRows()
             if (isGreen(frame.pixelColor(x, y)))
                 greenPx++;
     QVERIFY(greenPx > cw * ch / 2);
+}
+
+/**
+ * @brief 多 rect 局部重绘：跨两个脏行带的半透明 z>=0 kitty 图，
+ *        每个像素只参与一次 alpha 混合（与逐带单独渲染的参照帧逐像素一致）。
+ * @note 回归：旧实现 paintEvent 逐 rect 循环里 QPainter 裁剪是整个 event region
+ *       并集，跨 rect 的放置在每个 rect 轮次重复混合（颜色偏深）。
+ */
+void TestKittyGraphics::testSemiTransparentPaintedOnceAcrossRects()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initKittyRenderEnv(emu, win, display);
+    const int cw = display.cellPixelWidth();
+    const int ch = display.cellPixelHeight();
+
+    // 隐藏光标（DECTCEM 关）：光标复绘通道会盖住断言格，干扰逐像素比对
+    const QByteArray hideCursor = "\033[?25l";
+    emu.receiveData(hideCursor.constData(), int(hideCursor.size()));
+    // (0,0) 放 1 列 x 3 行 50% 透明红 z=0 图（C=1 固定光标；跨多个行带）
+    const QImage img = solidImage(cw, ch * 3, QColor(255, 0, 0, 128));
+    QByteArray png;
+    QBuffer buf(&png);
+    buf.open(QIODevice::WriteOnly);
+    img.save(&buf, "PNG");
+    const QByteArray seq = kittySeq("a=T,f=100,i=7,z=0,C=1", png.toBase64());
+    emu.receiveData(seq.constData(), int(seq.size()));
+    display.updateImage();
+
+    // warmup 首帧吃掉 _drawTextTestFlag（setVTFont 置位的一次性字体探测）
+    QImage warm(display.size(), QImage::Format_ARGB32);
+    warm.fill(Qt::black);
+    display.render(&warm);
+
+    const int cellX = display.contentsRect().left() + display.margin();
+    const int rowTop = display.contentsRect().top() + display.margin();
+    const int px = cellX + cw / 2; // 断言列：放置中心
+    // 两个不相邻行带（第 0、2 行）：不相邻保证 QRegion 不合并为单 rect
+    const QRect band0(0, rowTop, display.width(), ch);
+    const QRect band2(0, rowTop + 2 * ch, display.width(), ch);
+
+    // 参照帧：两个行带分别单独渲染，每像素必然只混合一次
+    QImage ref(display.size(), QImage::Format_ARGB32);
+    ref.fill(Qt::black);
+    display.render(&ref, band0.topLeft(), QRegion(band0));
+    display.render(&ref, band2.topLeft(), QRegion(band2));
+
+    // 被测帧：两个行带作为一个重绘区域一次渲染（boundingRect 原点映射保持坐标 1:1）。
+    // 旧实现下同一跨带放置在两个 rect 轮次各画一次，带内像素被二次混合，与参照帧不符
+    QImage frame(display.size(), QImage::Format_ARGB32);
+    frame.fill(Qt::black);
+    display.render(&frame, band0.topLeft(), QRegion(band0) + QRegion(band2));
+
+    QCOMPARE(frame.pixelColor(px, rowTop + ch / 2), ref.pixelColor(px, rowTop + ch / 2));
+    QCOMPARE(frame.pixelColor(px, rowTop + 2 * ch + ch / 2),
+             ref.pixelColor(px, rowTop + 2 * ch + ch / 2));
 }
 
 QTEST_MAIN(TestKittyGraphics)

@@ -104,10 +104,18 @@ bool KittyGraphicsParser::decodePayload(qint64 budgetRemaining, Result &out)
         if (cmd.format == 100) {
             if (cmd.pngSize <= 0)
                 return fail("EINVAL", "missing S"); // PNG 与压缩并用必须提供 S
+            // S 完全客户端可控：钳制到像素预算量级，防止单键迫使 qUncompress 大分配
+            if (cmd.pngSize > MAX_PNG_STREAM_BYTES)
+                return fail("EINVAL", "image too large");
             expected = cmd.pngSize;
         } else {
             if (cmd.width <= 0 || cmd.height <= 0)
                 return fail("EINVAL", "missing size");
+            // 解压前预检：尺寸/预算比较无需解压即可做，消除最大 400MB 瞬时分配
+            if (cmd.width > MAX_DIMENSION || cmd.height > MAX_DIMENSION)
+                return fail("EINVAL", "image too large");
+            if (qint64(cmd.width) * cmd.height * 4 > budgetRemaining)
+                return fail("ENOSPC", "pixel budget exceeded");
             expected = qint64(cmd.width) * cmd.height * (cmd.format == 24 ? 3 : 4);
         }
         raw = inflateWithLengthPrefix(raw, expected);

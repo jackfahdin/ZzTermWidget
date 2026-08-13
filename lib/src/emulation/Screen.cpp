@@ -1871,18 +1871,29 @@ void Screen::removeKittyPlacement(quint32 placementHandle)
 
 void Screen::kittyDeleteAll(bool freeData)
 {
-    // 收集当前全部放置句柄后逐个删除（removeKittyPlacement 内部维护引用计数）
-    const auto handles = _kittyPlacements.keys();
+    // d=a/A 只删除"屏幕上可见"的放置（上游协议原文：Delete all placements visible
+    // on screen）：收集屏幕行范围（_kittyLines[0..lines-1]）内被引用的放置句柄；
+    // 锚定在回看历史行的放置保留（removeKittyPlacement 内部维护引用计数）
+    QList<quint32> handles;
+    for (int i = 0; i < lines; i++)
+        for (const KittyPlacementRef &ref : _kittyLines[i])
+            if (!handles.contains(ref.placementHandle))
+                handles.append(ref.placementHandle);
     for (const quint32 handle : handles)
         removeKittyPlacement(handle);
     if (freeData) {
-        // 大写 A：连同释放无引用图像数据（此时 kitty 图像均已无放置）
+        // 大写 A：连同释放无引用图像数据；仍被他处放置（如回看历史）引用的图像保留
+        // （kittyImageInUse 扫全放置表，历史放置存活即视为使用中）
         const auto clientIds = _kittyImageHandles.keys();
-        for (const quint32 clientId : clientIds)
-            removeKittyImage(_kittyImageHandles.value(clientId));
+        for (const quint32 clientId : clientIds) {
+            const quint32 handle = _kittyImageHandles.value(clientId);
+            if (!kittyImageInUse(handle))
+                removeKittyImage(handle);
+        }
         const auto anonymous = _kittyAnonymous.values();
         for (const quint32 handle : anonymous)
-            removeKittyImage(handle);
+            if (!kittyImageInUse(handle))
+                removeKittyImage(handle);
     }
 }
 

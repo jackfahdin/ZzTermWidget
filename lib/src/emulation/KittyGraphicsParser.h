@@ -47,6 +47,14 @@ public:
     /** @brief 单张图宽/高硬上限（像素），超限报 EINVAL:image too large。 */
     static constexpr int MAX_DIMENSION = 10000;
 
+    /**
+     * @brief f=100 + o=z 时 S 键（PNG 解压后期望字节数）的上限。
+     * @note S 完全客户端可控，不钳制时单键可迫使 qUncompress 分配至多 2GB；
+     *       像素预算为 256MB（ARGB32 计），PNG 字节流至多略超原始像素量级，
+     *       故钳制到 256MB + 1MB 余量，超限报 EINVAL:image too large。
+     */
+    static constexpr qint64 MAX_PNG_STREAM_BYTES = 256LL * 1024 * 1024 + 1024 * 1024;
+
     /** @brief feed() 的返回状态。 */
     enum class Status {
         NeedMore, ///< m=1 续块：已累积，等待后续 APC 序列
