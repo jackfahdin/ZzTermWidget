@@ -16,6 +16,8 @@
  *       帧驱动必须走 notifyOutputChanged()（生产环境 outputChanged→updateImage 通路）：
  *       循环内无事件循环，bufferedUpdate 定时器不触发，直接调 updateImage() 只会拿
  *       陈旧 _windowBuffer 比对出空脏区（空 region 的 render 退化为整幅渲染）。
+ *       同理 showBulk() 不触发，Screen::scrolledLines 跨帧累积，滚动用例须在
+ *       notifyOutputChanged() 后复位滚动/丢行计数，否则 scrollCount 失真。
  */
 class TestBenchmark : public QObject
 {
@@ -163,35 +165,53 @@ void TestBenchmark::testFullScreenScroll_data()
 {
     QTest::addColumn<int>("lines");
     QTest::addColumn<int>("columns");
-    QTest::newRow("24x80") << 24 << 80;
-    QTest::newRow("40x160") << 40 << 160; // 大屏变体：比对段开销随格数放大，增强区分度
+    QTest::addColumn<bool>("fastPath");
+    // 行列号为名义像素预设（columns*10 x lines*25 像素），实际格数以显示组件按字体
+    // 换算为准（测试内反向对齐 Screen）；fastPath 列为滚动快路径开关的 A/B 对照
+    QTest::newRow("24x80 快路径") << 24 << 80 << true;
+    QTest::newRow("24x80 全量比对") << 24 << 80 << false;
+    QTest::newRow("40x160 快路径") << 40 << 160 << true; // 大屏变体：比对段开销随格数放大
+    QTest::newRow("40x160 全量比对") << 40 << 160 << false;
 }
 
 /**
  * @brief 整屏滚动：持续行输出使视图匀速上滚，每次迭代滚 4 行。
- * @note 滚动帧的脏区本就只有新进 4 行（scrollImage 像素搬迁为既有行为）；
- *       本用例的对比价值在 updateImage() 比对段耗时（任务 3 快路径的裁决证据）。
+ * @note 滚动帧的脏区只有新进 4 行 + 1 行边界陈旧行（scrollImage 像素搬迁为既有行为，
+ *       区域下沿钳到 _lines-2 使末行上方留一行未搬迁）；本用例的对比价值在
+ *       updateImage() 比对段耗时（任务 3 快路径的裁决证据），fastPath 列做开关 A/B。
+ * @note 首帧后对齐 Screen/窗口/显示三者行列：生产环境经 imageSizeChanged 保持一致；
+ *       不一致时窗口比屏幕高，新进内容落在底部空白尾区上方而非窗口底沿，
+ *       不存在纯整屏滚动形态（快路径无从命中，计量的也不是目标场景）。
  */
 void TestBenchmark::testFullScreenScroll()
 {
     QFETCH(int, lines);
     QFETCH(int, columns);
+    QFETCH(bool, fastPath);
     Vt102Emulation emu;
     ScreenWindow *win = nullptr;
     TerminalDisplay display;
     initDisplayEnv(emu, win, display, lines, columns);
-    const QByteArray content = buildScrollPayload(0, lines + 10); // 填满并进入滚动态
+    display.setScrollOptimizationEnabled(fastPath);
+    display.updateImage(); // 首帧：几何就位（updateImageSize 重算并同步 windowLines）
+    emu.setImageSize(display.lines(), display.columns()); // 对齐三者行列
+    const QByteArray content = buildScrollPayload(0, display.lines() + 10); // 填满并进入滚动态
     emu.receiveData(content.constData(), int(content.size()));
-    display.updateImage();
+    win->notifyOutputChanged();
+    win->screen()->resetScrolledLines();
+    win->screen()->resetDroppedLines();
     QImage image(display.size(), QImage::Format_ARGB32);
     image.fill(Qt::black);
     display.render(&image); // warmup
-    int lineNo = lines + 10;
+    int lineNo = display.lines() + 10;
     QBENCHMARK {
         const QByteArray out = buildScrollPayload(lineNo, 4);
         lineNo += 4;
         emu.receiveData(out.constData(), int(out.size()));
         win->notifyOutputChanged(); // 驱动本帧 updateImage()，见文件头说明
+        // 镜像 Emulation::showBulk() 的消费后复位，保证 scrollCount 为本帧滚动量
+        win->screen()->resetScrolledLines();
+        win->screen()->resetDroppedLines();
         display.render(&image, QPoint(), display.lastDirtyRegion());
     }
 }

@@ -77,6 +77,7 @@ enum BackgroundMode {
     Fill
 };
 
+class Screen;
 class ScreenWindow;
 class ScrollBar;
 
@@ -421,6 +422,24 @@ public:
 
     /** @brief 查询文本批次聚合绘制路径是否启用。 */
     bool isTextBatchingEnabled() const { return _textBatchingEnabled; }
+
+    /**
+     * @brief 开关纯整屏滚动快路径（已移位行跳过一次重复比对，新进 N 行走跨度级脏区）。
+     * @param enabled true = 启用（默认）；false = 回退全屏逐格比对。
+     * @note 供 benchmark A/B 与故障回退；内部接口，不进公共头 qtermwidget.h。
+     */
+    void setScrollOptimizationEnabled(bool enabled) { _scrollOptimizationEnabled = enabled; }
+
+    /** @brief 查询纯整屏滚动快路径是否启用。 */
+    bool isScrollOptimizationEnabled() const { return _scrollOptimizationEnabled; }
+
+    /**
+     * @brief 纯整屏滚动快路径累计命中帧数。
+     * @return 快路径通过错位检测并接管 moved 行的帧数。
+     * @note 测试观测钩子：快路径无可观测行为差异，以此证明其真正接管
+     *       （镜像 _drawTextTestFlag 的内部观测点惯例）；内部接口。
+     */
+    int scrollFastPathFrameCount() const { return _scrollFastPathFrames; }
 
     /**
      * @brief 查询上一次 updateImage() 计算并提交给 QWidget::update() 的脏区。
@@ -939,6 +958,13 @@ private:
 
     /** @brief 上一次 updateImage() 提交的脏区；lastDirtyRegion() 测试钩子用。 */
     QRegion _lastDirtyRegion;
+
+    /** @brief 纯整屏滚动快路径开关（setScrollOptimizationEnabled()）。 */
+    bool _scrollOptimizationEnabled = true;
+    /** @brief 上一次 updateImage() 的 Screen 指针；备选屏切换帧检测（快路径回退条件）。 */
+    Screen *_lastImageScreen = nullptr;
+    /** @brief 快路径累计命中帧数；scrollFastPathFrameCount() 测试钩子用。 */
+    int _scrollFastPathFrames = 0;
 
     ColorEntry _colorTable[TABLE_COLORS];
 
