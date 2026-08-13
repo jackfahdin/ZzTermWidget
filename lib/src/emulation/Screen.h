@@ -391,6 +391,18 @@ public:
      */
     void setBackColor(int space, int color);
     /**
+     * @brief 设置当前下划线样式（SGR 4:n 冒口子参数）。
+     * @param style UNDERLINE_* 取值（0=单线…4=虚线），写入 rendition 位 11-13。
+     * @note 仅写样式位；RE_UNDERLINE 汇总位由调用方（SGR 4 分支）负责置位。
+     */
+    void setUnderlineStyle(int style);
+    /**
+     * @brief 设置当前独立下划线颜色（SGR 58）。
+     * @param space 颜色空间（COLOR_SPACE_*）；COLOR_SPACE_DEFAULT 表示跟随前景色（SGR 59）。
+     * @param color 颜色值，语义同 setForeColor()；非法值回退为跟随前景。
+     */
+    void setUnderlineColor(int space, int color);
+    /**
      * Resets the cursor's color back to the default and sets the
      * character's rendition flags back to the default settings.
      */
@@ -864,6 +876,8 @@ private:
     // cursor color and rendition info
     CharacterColor currentForeground;
     CharacterColor currentBackground;
+    /** @brief 当前独立下划线颜色；默认 COLOR_SPACE_DEFAULT（跟随前景）。 */
+    CharacterColor currentUnderlineColor = CharacterColor(COLOR_SPACE_DEFAULT, DEFAULT_FORE_COLOR);
     quint16 currentRendition;
 
     // margins ----------------
@@ -887,6 +901,7 @@ private:
     // effective colors and rendition ------------
     CharacterColor effectiveForeground; // These are derived from
     CharacterColor effectiveBackground; // the cu_* variables above
+    CharacterColor effectiveUnderlineColor = CharacterColor(COLOR_SPACE_DEFAULT, DEFAULT_FORE_COLOR);
     quint16 effectiveRendition;         // to speed up operation
 
     class SavedState {
@@ -899,6 +914,8 @@ private:
         quint16 rendition;
         CharacterColor foreground;
         CharacterColor background;
+        /** @brief 保存的下划线色；DECSC/DECRC 随前景/背景一同保存恢复（镜像 konsole 语义）。 */
+        CharacterColor underlineColor = CharacterColor(COLOR_SPACE_DEFAULT, DEFAULT_FORE_COLOR);
     };
     SavedState savedState;
 

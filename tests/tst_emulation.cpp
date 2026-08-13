@@ -50,6 +50,10 @@ private slots:
     void testSixelOversizedStreamDropped();
     void testNonSixelDcsUnaffected();
     void testCharacterUnderlineEquality();
+    void testSgrUnderlineStyles_data();
+    void testSgrUnderlineStyles();
+    void testSgrUnderlineSemicolonVsColon();
+    void testSgrUnderlineColor();
 };
 
 /**
@@ -60,6 +64,17 @@ static QString firstLineText(Vt102Emulation &emu, int columns)
 {
     ScreenWindow *win = emu.createWindow();
     return win->screen()->getScreenText(0, 0, 0, columns - 1, 1);
+}
+
+/**
+ * @brief 读取当前屏幕第 0 行前 columns 格的 Character（经 Screen::getImage 真实路径）。
+ */
+static QVector<Character> firstLineChars(Vt102Emulation &emu, int columns)
+{
+    Screen *scr = emu.createWindow()->screen();
+    QVector<Character> buf(columns);
+    scr->getImage(buf.data(), columns, 0, 0);
+    return buf;
 }
 
 /**
@@ -878,6 +893,88 @@ void TestEmulation::testCharacterUnderlineEquality()
     QVERIFY(a != c);
     QVERIFY(!a.equalsFormat(c));
     QVERIFY(c.hasCustomUnderlineColor());
+}
+
+void TestEmulation::testSgrUnderlineStyles_data()
+{
+    QTest::addColumn<QByteArray>("seq");
+    QTest::addColumn<bool>("underlined");
+    QTest::addColumn<int>("style");
+    QTest::newRow("SGR 4 单线")    << QByteArray("\033[4m")          << true  << UNDERLINE_SINGLE;
+    QTest::newRow("SGR 4:0 关")    << QByteArray("\033[4:0m")        << false << UNDERLINE_SINGLE;
+    QTest::newRow("SGR 4:1 单线")  << QByteArray("\033[4:1m")        << true  << UNDERLINE_SINGLE;
+    QTest::newRow("SGR 4:2 双线")  << QByteArray("\033[4:2m")        << true  << UNDERLINE_DOUBLE;
+    QTest::newRow("SGR 4:3 波浪")  << QByteArray("\033[4:3m")        << true  << UNDERLINE_CURLY;
+    QTest::newRow("SGR 4:4 点线")  << QByteArray("\033[4:4m")        << true  << UNDERLINE_DOTTED;
+    QTest::newRow("SGR 4:5 虚线")  << QByteArray("\033[4:5m")        << true  << UNDERLINE_DASHED;
+    QTest::newRow("SGR 4:6 非法")  << QByteArray("\033[4:6m")        << false << UNDERLINE_SINGLE;
+    QTest::newRow("SGR 4:99 非法") << QByteArray("\033[4:99m")       << false << UNDERLINE_SINGLE;
+    QTest::newRow("SGR 24 关")     << QByteArray("\033[4:3m\033[24m") << false << UNDERLINE_SINGLE;
+}
+
+/**
+ * @brief SGR 4:n 冒口子参数：样式落入 rendition 位 11-13，RE_UNDERLINE 作汇总位。
+ * @note 4:0/24 关下划线同时清样式位；非法样式（>=6）整体忽略。
+ */
+void TestEmulation::testSgrUnderlineStyles()
+{
+    QFETCH(QByteArray, seq);
+    QFETCH(bool, underlined);
+    QFETCH(int, style);
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.receiveData(seq.constData(), seq.size());
+    emu.receiveData("X", 1);
+    const QVector<Character> line = firstLineChars(emu, 80);
+    QCOMPARE(bool(line[0].rendition & RE_UNDERLINE), underlined);
+    QCOMPARE(line[0].underlineStyle(), style);
+}
+
+/**
+ * @brief 核心回归：4;3（分号）= 下划线+斜体，4:3（冒号）= 波浪下划线，严格区分。
+ * @note 改造前 ':' 被拍平为参数分隔，4:3 被误判为下划线+斜体。
+ */
+void TestEmulation::testSgrUnderlineSemicolonVsColon()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    const char *seq = "\033[4;3mX\033[0m\033[4:3mY";
+    emu.receiveData(seq, int(std::strlen(seq)));
+    const QVector<Character> line = firstLineChars(emu, 80);
+    // X：分号语义 —— 下划线 + 斜体，样式位保持单线
+    QVERIFY(line[0].rendition & RE_UNDERLINE);
+    QVERIFY(line[0].rendition & RE_ITALIC);
+    QCOMPARE(line[0].underlineStyle(), UNDERLINE_SINGLE);
+    // Y：冒口子参数 —— 波浪下划线，无斜体
+    QVERIFY(line[1].rendition & RE_UNDERLINE);
+    QVERIFY(!(line[1].rendition & RE_ITALIC));
+    QCOMPARE(line[1].underlineStyle(), UNDERLINE_CURLY);
+}
+
+/**
+ * @brief SGR 58 独立下划线色（分号/冒号两种形式）与 SGR 59 复位。
+ * @note 58;2 按定长消费 5 槽：58;2;1;2;3;1 的尾巴 1 必须解释为独立 SGR（粗体）。
+ */
+void TestEmulation::testSgrUnderlineColor()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    const char *seq =
+            "\033[58;5;196mA"          // 分号 256 色
+            "\033[59mB"                // 复位为跟随前景
+            "\033[58;2;10;20;30mC"     // 分号真彩
+            "\033[58:5:42mD"           // 冒号 256 色
+            "\033[58:2::100:150:200mE" // 冒号真彩（容忍色彩空间空位）
+            "\033[58;2;1;2;3;1mF";     // 定长消费：尾巴 ;1 = 粗体
+    emu.receiveData(seq, int(std::strlen(seq)));
+    const QVector<Character> line = firstLineChars(emu, 80);
+    QVERIFY(line[0].underlineColor == CharacterColor(COLOR_SPACE_256, 196));
+    QVERIFY(line[1].underlineColor == CharacterColor(COLOR_SPACE_DEFAULT, DEFAULT_FORE_COLOR));
+    QVERIFY(line[2].underlineColor == CharacterColor(COLOR_SPACE_RGB, (10 << 16) | (20 << 8) | 30));
+    QVERIFY(line[3].underlineColor == CharacterColor(COLOR_SPACE_256, 42));
+    QVERIFY(line[4].underlineColor == CharacterColor(COLOR_SPACE_RGB, (100 << 16) | (150 << 8) | 200));
+    QVERIFY(line[5].underlineColor == CharacterColor(COLOR_SPACE_RGB, (1 << 16) | (2 << 8) | 3));
+    QVERIFY(line[5].rendition & RE_BOLD); // 定长消费回归：尾巴未被吞
 }
 
 QTEST_GUILESS_MAIN(TestEmulation)

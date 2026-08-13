@@ -165,6 +165,8 @@ void Vt102Emulation::resetTokenizer() {
     argc = 0;
     argv[0] = 0;
     argv[1] = 0;
+    argSeparators[0] = 0;
+    argSeparators[1] = 0;
     prevCC = 0;
 }
 
@@ -173,9 +175,14 @@ void Vt102Emulation::addDigit(int digit) {
         argv[argc] = 10 * argv[argc] + digit;
 }
 
-void Vt102Emulation::addArgument() {
+/**
+ * @brief 结束当前参数并开始下一个参数。
+ * @param sep 引入新参数的前导分隔符（';' 或 ':'），记录到 argSeparators 供 SGR 消费。
+ */
+void Vt102Emulation::addArgument(char sep) {
     argc = qMin(argc + 1, MAXARGS - 1);
     argv[argc] = 0;
+    argSeparators[argc] = sep;
 }
 
 void Vt102Emulation::addToCurrentToken(char32_t cc) {
@@ -483,7 +490,7 @@ void Vt102Emulation::receiveChar(char32_t cc) {
                 return;
             }
             if (ees(DIG)) { addDigit(cc-'0'); return; }
-            if (eec(';') || eec(':')) { addArgument(); return; }
+            if (eec(';') || eec(':')) { addArgument(static_cast<char>(cc)); return; }
             return;
         }
 
@@ -496,7 +503,7 @@ void Vt102Emulation::receiveChar(char32_t cc) {
                 return;
             }
             if (ees(DIG)) { addDigit(cc-'0'); return; }
-            if (eec(';') || eec(':')) { addArgument(); return; }
+            if (eec(';') || eec(':')) { addArgument(static_cast<char>(cc)); return; }
             return;
         }
 
@@ -523,7 +530,7 @@ void Vt102Emulation::receiveChar(char32_t cc) {
             return;
         }
         if (eec(';') || eec(':')) {
-            addArgument();
+            addArgument(static_cast<char>(cc));
             return;
         }
 
@@ -555,7 +562,49 @@ void Vt102Emulation::receiveChar(char32_t cc) {
                 processToken(TY_CSI_PR(cc, argv[i]), 0, 0);
             else if (egt())
                 processToken(TY_CSI_PG(cc), 0, 0); // spec. case for ESC]>0c or ESC]>c
-            else if (cc == 'm' && argc - i >= 4 && (argv[i] == 38 || argv[i] == 48) &&
+            else if (cc == 'm' && argv[i] == 4 && i + 1 <= argc && argSeparators[i + 1] == ':') {
+                // SGR 4:n 冒口子参数：下划线样式（ECMA-48 子参数；与 4;n 分号语义严格区分）
+                const int sub = argv[++i]; // 消费子参数
+                if (sub == 0)
+                    processToken(TY_CSI_PS(cc, 24), 0, 0);        // 4:0 = 关下划线
+                else if (sub >= 1 && sub <= 5)
+                    processToken(TY_CSI_PS(cc, 4), sub - 1, 0);   // p 携带样式（0=单线…4=虚线）
+                // 非法样式（>=6）：连同子参数整体忽略，不影响其余 SGR 参数
+            } else if (cc == 'm' && argv[i] == 58 && i + 1 <= argc && argSeparators[i + 1] == ':') {
+                // SGR 58 冒号形式：58:5:n / 58:2[:色彩空间空位]:r:g:b（必须先于 58 分号分支：
+                // 58:2::r:g:b 拍平后同样满足 argv[i]==58 && argv[i+1]==2）
+                if (argv[i + 1] == 5 && i + 2 <= argc) {
+                    processToken(TY_CSI_PS(cc, 58), COLOR_SPACE_256, argv[i + 2]);
+                    i += 2;
+                } else if (argv[i + 1] == 2) {
+                    int j = i + 2;
+                    // 容忍色彩空间空位：58:2::r:g:b 拍平后该槽为 0
+                    // （要求其后仍够 r/g/b 三槽才跳过；已知歧义：r=0 的真彩写法被当空位，整体忽略）
+                    if (j <= argc && argv[j] == 0 && argc - j >= 3)
+                        j++;
+                    if (argc - j >= 2) {
+                        processToken(TY_CSI_PS(cc, 58), COLOR_SPACE_RGB,
+                                             (argv[j] << 16) | (argv[j + 1] << 8) | argv[j + 2]);
+                        i = j + 2;
+                    } else {
+                        i += 1; // 参数不足：忽略 58 与模式槽，其余参数按独立 SGR 解释
+                    }
+                } else {
+                    i += 1; // 未知 58 模式：忽略 58 与模式槽
+                }
+            } else if (cc == 'm' && argc - i >= 4 && argv[i] == 58 && argv[i + 1] == 2) {
+                // SGR 58 分号真彩：58;2;r;g;b（镜像 38/48 写法，定长消费 5 槽，尾巴不吞）
+                i += 2;
+                processToken(TY_CSI_PS(cc, 58), COLOR_SPACE_RGB,
+                                         (argv[i] << 16) | (argv[i + 1] << 8) | argv[i + 2]);
+                i += 2;
+            } else if (cc == 'm' && argc - i >= 2 && argv[i] == 58 && argv[i + 1] == 5) {
+                // SGR 58 分号 256 色：58;5;n
+                i += 2;
+                processToken(TY_CSI_PS(cc, 58), COLOR_SPACE_256, argv[i]);
+            } else if (cc == 'm' && argv[i] == 58) {
+                // 参数不足的 58：忽略该参数，不吞后续独立 SGR
+            } else if (cc == 'm' && argc - i >= 4 && (argv[i] == 38 || argv[i] == 48) &&
                              argv[i + 1] == 2) {
                 // ESC[ ... 48;2;<red>;<green>;<blue> ... m -or- ESC[ ...
                 // 38;2;<red>;<green>;<blue> ... m
@@ -1287,6 +1336,7 @@ void Vt102Emulation::processToken(int token, char32_t p, int q) {
         break; // VT100
     case TY_CSI_PS('m', 4):
         _currentScreen->setRendition(RE_UNDERLINE);
+        _currentScreen->setUnderlineStyle(int(p)); // p：冒口子参数样式（0=单线…4=虚线）；分号形式恒 0
         break; // VT100
     case TY_CSI_PS('m', 5):
         _currentScreen->setRendition(RE_BLINK);
@@ -1320,7 +1370,7 @@ void Vt102Emulation::processToken(int token, char32_t p, int q) {
         _currentScreen->resetRendition(RE_ITALIC);
         break; // VT100
     case TY_CSI_PS('m', 24):
-        _currentScreen->resetRendition(RE_UNDERLINE);
+        _currentScreen->resetRendition(RE_UNDERLINE | RE_UNDERLINE_STYLE_MASK); // 关下划线并清样式位
         break;
     case TY_CSI_PS('m', 25):
         _currentScreen->resetRendition(RE_BLINK);
@@ -1402,6 +1452,14 @@ void Vt102Emulation::processToken(int token, char32_t p, int q) {
 
     case TY_CSI_PS('m', 49):
         _currentScreen->setBackColor(COLOR_SPACE_DEFAULT, 1);
+        break;
+
+    case TY_CSI_PS('m', 58):
+        _currentScreen->setUnderlineColor(p, q);
+        break;
+
+    case TY_CSI_PS('m', 59):
+        _currentScreen->setUnderlineColor(COLOR_SPACE_DEFAULT, DEFAULT_FORE_COLOR);
         break;
 
     case TY_CSI_PS('m', 90):

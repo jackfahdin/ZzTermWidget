@@ -147,8 +147,14 @@ private:
   int tokenBufferPos;
 #define MAXARGS 15
   void addDigit(int dig);
-  void addArgument();
+  void addArgument(char sep);
   int argv[MAXARGS];
+  /**
+   * @brief 逐参数前导分隔符记录：argSeparators[i] 为引入第 i 个参数的分隔符
+   *        （';' 或 ':'），首参数记 0。仅 SGR（最终字符 'm'）分发消费该信息，
+   *        其余 CSI 序列只记录不解释，行为零变化；截断语义与 argv 一致。
+   */
+  char argSeparators[MAXARGS];
   int argc;
   void initTokenizer();
   int prevCC;

@@ -276,6 +276,7 @@ void Screen::saveCursor() {
     savedState.rendition = currentRendition;
     savedState.foreground = currentForeground;
     savedState.background = currentBackground;
+    savedState.underlineColor = currentUnderlineColor;
 }
 
 void Screen::restoreCursor() {
@@ -284,6 +285,7 @@ void Screen::restoreCursor() {
     currentRendition = savedState.rendition;
     currentForeground = savedState.foreground;
     currentBackground = savedState.background;
+    currentUnderlineColor = savedState.underlineColor;
     updateEffectiveRendition();
 }
 
@@ -403,6 +405,8 @@ void Screen::reverseRendition(Character &p) const {
 
 void Screen::updateEffectiveRendition() {
     effectiveRendition = currentRendition;
+    // 下划线色不参与 RE_REVERSE 前景/背景交换；DEFAULT 由绘制层回落片段实际文本色
+    effectiveUnderlineColor = currentUnderlineColor;
     if (currentRendition & RE_REVERSE) {
         effectiveForeground = currentBackground;
         effectiveBackground = currentForeground;
@@ -708,6 +712,7 @@ void Screen::displayCharacter(char32_t c) {
                 ch.foregroundColor = effectiveForeground;
                 ch.backgroundColor = effectiveBackground;
                 ch.rendition = effectiveRendition;
+                ch.underlineColor = effectiveUnderlineColor;
 
                 if (getMode(MODE_Insert)) {
                     insertChars(1);
@@ -766,6 +771,7 @@ notcombine:
     currentChar.foregroundColor = effectiveForeground;
     currentChar.backgroundColor = effectiveBackground;
     currentChar.rendition = effectiveRendition;
+    currentChar.underlineColor = effectiveUnderlineColor;
 
     lastDrawnChar = c;
 
@@ -782,6 +788,7 @@ notcombine:
         ch.foregroundColor = effectiveForeground;
         ch.backgroundColor = effectiveBackground;
         ch.rendition = effectiveRendition;
+        ch.underlineColor = effectiveUnderlineColor;
 
         w--;
     }
@@ -1131,6 +1138,7 @@ void Screen::resetRendition(int re) {
 void Screen::setDefaultRendition() {
     setForeColor(COLOR_SPACE_DEFAULT, DEFAULT_FORE_COLOR);
     setBackColor(COLOR_SPACE_DEFAULT, DEFAULT_BACK_COLOR);
+    setUnderlineColor(COLOR_SPACE_DEFAULT, DEFAULT_FORE_COLOR); // SGR 0 连带复位下划线色
     currentRendition = DEFAULT_RENDITION;
     updateEffectiveRendition();
 }
@@ -1151,6 +1159,23 @@ void Screen::setBackColor(int space, int color) {
         updateEffectiveRendition();
     else
         setBackColor(COLOR_SPACE_DEFAULT, DEFAULT_BACK_COLOR);
+}
+
+void Screen::setUnderlineStyle(int style) {
+    currentRendition = static_cast<quint16>(
+            (currentRendition & ~RE_UNDERLINE_STYLE_MASK)
+            | ((style << 11) & RE_UNDERLINE_STYLE_MASK));
+    updateEffectiveRendition();
+}
+
+void Screen::setUnderlineColor(int space, int color) {
+    currentUnderlineColor = CharacterColor(space, color);
+
+    if (currentUnderlineColor.isValid())
+        updateEffectiveRendition();
+    else
+        // 非法颜色：复位为跟随前景（镜像 setForeColor 的回退语义）
+        setUnderlineColor(COLOR_SPACE_DEFAULT, DEFAULT_FORE_COLOR);
 }
 
 void Screen::clearSelection() {
