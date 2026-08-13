@@ -116,7 +116,7 @@ struct KittyPlacement {
  */
 struct KittyPlacementRef {
     quint32 placementHandle; ///< 放置句柄，经 Screen::kittyPlacement() 换取放置参数
-    int rowOffset;           ///< 本行在放置内的行偏移（0 = 放置首行；绘制层只从 0 行画一次）
+    int rowOffset;           ///< 本行在放置内的行偏移（0 = 放置首行；绘制层按本行偏移画该行的水平带切片）
 };
 
 /**

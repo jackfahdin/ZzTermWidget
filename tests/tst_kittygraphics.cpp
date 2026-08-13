@@ -109,6 +109,8 @@ private slots:
     void testPartialRepaintKeepsNonAnchorRows();
     // 离屏渲染（终轮审查 F2：多 rect 局部重绘不重复 alpha 混合）
     void testSemiTransparentPaintedOnceAcrossRects();
+    // 离屏渲染（正确性修复包：DECSTBM 部分滚动切割逐行切片）
+    void testDecstbmCutSlicesAligned();
 };
 
 void TestKittyGraphics::testParseKeysAndDefaults()
@@ -1031,7 +1033,7 @@ void TestKittyGraphics::testCursorRedrawnOverImages()
 
 /**
  * @brief 部分脏区回归：跨多行的 z>=0 kitty 图，仅非锚定行触发局部重绘时，
- *        该行图像像素必须仍在（任意引用行参与绘制，靠重绘区域裁剪补画）。
+ *        该行图像像素必须仍在（逐行切片后该行画本行切片）。
  * @note 回归：旧实现只在 rowOffset==0 的锚定行画整图，局部重绘非锚定行时
  *       drawBackground 抹掉图像后不补画，造成图像破洞。
  */
@@ -1143,6 +1145,77 @@ void TestKittyGraphics::testSemiTransparentPaintedOnceAcrossRects()
     QCOMPARE(frame.pixelColor(px, rowTop + ch / 2), ref.pixelColor(px, rowTop + ch / 2));
     QCOMPARE(frame.pixelColor(px, rowTop + 2 * ch + ch / 2),
              ref.pixelColor(px, rowTop + 2 * ch + ch / 2));
+}
+
+/**
+ * @brief DECSTBM 部分滚动横切放置中部：切割后各段引用行各自画本行水平带切片，
+ *        上下两段像素各归其位（图像随文本切割，与 sixel 行为一致）。
+ * @note 回归：整图画法按"任意引用行回推锚定行"把整图锚在切割前的锚定行，
+ *       下段引用行显示的是错误的图像带（偏移 = 滚动行数：带 3/4/5 错成带 1/2/3）。
+ */
+void TestKittyGraphics::testDecstbmCutSlicesAligned()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initKittyRenderEnv(emu, win, display);
+    const int cw = display.cellPixelWidth();
+    const int ch = display.cellPixelHeight();
+
+    const QByteArray hideCursor = "\033[?25l"; // 隐藏光标：排除复绘通道干扰
+    emu.receiveData(hideCursor.constData(), int(hideCursor.size()));
+    // 每行带一种红色梯度（40/80/…/240）的 1 列 x 6 行图，放在行 2（0 起）第 0 列；
+    // c=1,r=6 显式显示区，C=1 固定光标（避免放置后光标移动触发滚动）
+    QImage img(cw, ch * 6, QImage::Format_ARGB32);
+    for (int i = 0; i < 6; i++)
+        for (int y = i * ch; y < (i + 1) * ch; y++)
+            for (int x = 0; x < cw; x++)
+                img.setPixelColor(x, y, QColor(40 * (i + 1), 0, 0));
+    QByteArray png;
+    QBuffer buf(&png);
+    buf.open(QIODevice::WriteOnly);
+    img.save(&buf, "PNG");
+    const QByteArray home = "\033[3;1H";
+    emu.receiveData(home.constData(), int(home.size()));
+    const QByteArray seq = kittySeq("a=T,f=100,i=11,z=0,C=1,c=1,r=6", png.toBase64());
+    emu.receiveData(seq.constData(), int(seq.size()));
+    display.updateImage();
+
+    const int cellX = display.contentsRect().left() + display.margin();
+    const int rowTop = display.contentsRect().top() + display.margin();
+    const int px = cellX + cw / 2; // 断言列：放置中心
+    const auto bandRed = [&](const QImage &f, int row) {
+        return f.pixelColor(px, rowTop + row * ch + ch / 2).red();
+    };
+
+    // warmup 基线（顺带吃掉 _drawTextTestFlag）：行 2..7 依次为梯度带 0..5
+    QImage warm(display.size(), QImage::Format_ARGB32);
+    warm.fill(Qt::black);
+    display.render(&warm);
+    for (int i = 0; i < 6; i++)
+        QVERIFY2(qAbs(bandRed(warm, 2 + i) - 40 * (i + 1)) <= 4,
+                 qPrintable(QStringLiteral("基线行 %1 红值 %2 ≠ 带 %3")
+                            .arg(2 + i).arg(bandRed(warm, 2 + i)).arg(i)));
+
+    // DECSTBM 滚动区行 3..10（0 起）横切放置中部，区内上滚 2 行（CSI S 走
+    // _topMargin，与光标位置无关）：行 2（带 0）留在区外不动；行 3..5 经 moveImage
+    // 取得原行 5..7 的引用（带 3/4/5，k 在切割边界跳变 2）；行 6..7 引用移出
+    const QByteArray cut = "\033[4;11r\033[2S";
+    emu.receiveData(cut.constData(), int(cut.size()));
+    display.updateImage();
+
+    QImage frame(display.size(), QImage::Format_ARGB32);
+    frame.fill(Qt::black);
+    display.render(&frame);
+    QVERIFY(qAbs(bandRed(frame, 2) - 40) <= 4);  // 区外上段原位
+    QVERIFY(qAbs(bandRed(frame, 3) - 160) <= 4); // 下段：带 3（整图画法错成带 1 = 80）
+    QVERIFY(qAbs(bandRed(frame, 4) - 200) <= 4); // 带 4（错成 120）
+    QVERIFY(qAbs(bandRed(frame, 5) - 240) <= 4); // 带 5（错成 160）
+    // 引用移出的行恢复背景（与未触碰的空行 12 逐像素一致，不假设具体背景色值）
+    QCOMPARE(frame.pixelColor(px, rowTop + 6 * ch + ch / 2),
+             frame.pixelColor(px, rowTop + 12 * ch + ch / 2));
+    QCOMPARE(frame.pixelColor(px, rowTop + 7 * ch + ch / 2),
+             frame.pixelColor(px, rowTop + 12 * ch + ch / 2));
 }
 
 QTEST_MAIN(TestKittyGraphics)

@@ -1916,9 +1916,9 @@ void TerminalDisplay::paintEvent(QPaintEvent *pe) {
 
     const QRegion regToDraw = pe->region() & cr;
     for (auto rect = regToDraw.begin(); rect != regToDraw.end(); rect++) {
-        // 逐 rect 交叉裁剪：QPainter 的裁剪本是整个 event region 并集，跨 rect 的
-        // 半透明 kitty 放置（整图画法）会在每个 rect 轮次重复 alpha 混合（颜色偏深）；
-        // 逐 rect 裁剪保证任一像素本轮只画一次
+        // 逐 rect 交叉裁剪：QPainter 的裁剪本是整个 event region 并集；kitty 逐行
+        // 切片后带恒落在单行带内、天然不跨 rect；逐 rect 裁剪保留为防御，保证任一
+        // 像素本轮只画一次
         paint.save();
         paint.setClipRect(*rect, Qt::IntersectClip);
         drawBackground(paint, *rect, _colorTable[DEFAULT_BACK_COLOR].color,
@@ -2203,58 +2203,75 @@ void TerminalDisplay::drawKittyPlacements(QPainter &paint, const QRect &rect, bo
     const int rly = qMin(_usedLines - 1,
                          qMax(0, (rect.bottom() - tL.y() - _topMargin) / _fontHeight));
     const int topLine = _screenWindow->currentLine();
-
-    // 收集可见放置：任意引用行都参与绘制——经 y - rowOffset 回推锚定行的图像原点，
-    // 画出放置的完整目标矩形，由 QPainter 按重绘区域裁剪（局部重绘只脏非锚定行时
-    // 也能补画该行图像，避免 drawBackground 抹出破洞）；同一放置的多行引用去重，
-    // 防止整帧重绘时半透明放置被重复 alpha 混合
-    struct Item {
-        const KittyPlacement *pl;
-        int viewRow; ///< 锚定行的视图行（= 引用行 y - rowOffset；可为负，QPainter 裁剪）
-    };
-    QVector<Item> items;
-    QVector<quint32> seenHandles; ///< 已收集的放置句柄（去重；放置数量小，线性查即可）
-    for (int y = luy; y <= rly; y++) {
-        for (const KittyPlacementRef &ref : screen->kittyRefs(topLine + y)) {
-            const KittyPlacement *pl = screen->kittyPlacement(ref.placementHandle);
-            if (!pl || (pl->zIndex >= 0) != aboveText)
-                continue;
-            if (seenHandles.contains(ref.placementHandle))
-                continue;
-            seenHandles.append(ref.placementHandle);
-            items.append({pl, y - ref.rowOffset});
-        }
-    }
-    // z-index 排序：z 升序；同 z 重叠时 id 小者更低层；同 z 同 id 按插入序
-    std::sort(items.begin(), items.end(), [](const Item &a, const Item &b) {
-        if (a.pl->zIndex != b.pl->zIndex)
-            return a.pl->zIndex < b.pl->zIndex;
-        if (a.pl->imageId != b.pl->imageId)
-            return a.pl->imageId < b.pl->imageId;
-        return a.pl->serial < b.pl->serial;
-    });
-
     const int rightEdge = _leftMargin + tL.x() + _usedColumns * _fontWidth;
-    for (const Item &item : items) {
-        const KittyPlacement *pl = item.pl;
-        const ScreenImage *img = screen->image(pl->imageHandle);
-        if (!img)
+
+    // 逐行水平带切片（与 sixel 同式）：每个引用行只画放置目标矩形与本行单元格行带
+    // 的纵向交集，源带按目标高度比例从源矩形取条。行一致性不再依赖"回推锚定行画
+    // 整图"：DECSTBM 部分滚动（或 insertLine/deleteLine）切割跨边界放置后，各段
+    // 引用行各自落在正确视图行，图像随文本切割。带恒落在本行行带内，多 rect 局部
+    // 重绘的半透明重复混合结构性消除（无需 seenHandles 去重）。
+    for (int y = luy; y <= rly; y++) {
+        const auto refs = screen->kittyRefs(topLine + y);
+        if (refs.isEmpty())
             continue;
-        const QRect src = QRect(pl->srcX, pl->srcY, pl->srcW, pl->srcH) & img->image.rect();
-        if (src.isEmpty())
-            continue;
-        // 目标矩形：(col, 锚定行) 单元格起 + X/Y 像素偏移，尺寸 c×r 单元格，超右缘截断
-        const int tx = _leftMargin + tL.x() + pl->col * _fontWidth + pl->cellXOff;
-        const int ty = _topMargin + tL.y() + item.viewRow * _fontHeight + pl->cellYOff;
-        const int fullW = pl->cols * _fontWidth;
-        const QRect target(tx, ty, qMin(fullW, rightEdge - tx), pl->rows * _fontHeight);
-        if (target.width() <= 0 || !target.intersects(rect))
-            continue;
-        // 右侧截断时源矩形等比收缩，保持映射比例
-        QRect s = src;
-        if (fullW > target.width())
-            s.setWidth(int(qint64(src.width()) * target.width() / fullW));
-        paint.drawImage(target, img->image, s); // 半透明按 z 序 alpha 混合
+        struct RowItem {
+            const KittyPlacement *pl;
+            int rowOffset; ///< 本行在放置内的行偏移（0 = 放置首行）
+        };
+        QVector<RowItem> rowItems;
+        rowItems.reserve(refs.size());
+        for (const KittyPlacementRef &ref : refs) {
+            const KittyPlacement *pl = screen->kittyPlacement(ref.placementHandle);
+            if (pl && (pl->zIndex >= 0) == aboveText)
+                rowItems.append({pl, ref.rowOffset});
+        }
+        // 本行内 z-index 排序：z 升序；同 z 重叠时 id 小者更低层；同 z 同 id 按插入序
+        std::sort(rowItems.begin(), rowItems.end(), [](const RowItem &a, const RowItem &b) {
+            if (a.pl->zIndex != b.pl->zIndex)
+                return a.pl->zIndex < b.pl->zIndex;
+            if (a.pl->imageId != b.pl->imageId)
+                return a.pl->imageId < b.pl->imageId;
+            return a.pl->serial < b.pl->serial;
+        });
+
+        const int rowTop = _topMargin + tL.y() + y * _fontHeight;
+        for (const RowItem &item : rowItems) {
+            const KittyPlacement *pl = item.pl;
+            const ScreenImage *img = screen->image(pl->imageHandle);
+            if (!img)
+                continue;
+            const QRect src = QRect(pl->srcX, pl->srcY, pl->srcW, pl->srcH) & img->image.rect();
+            if (src.isEmpty())
+                continue;
+            // 目标矩形（未截断）：(col, 锚定行) 单元格起 + X/Y 像素偏移，尺寸 c×r
+            // 单元格。锚定视图行由本行回推（y - rowOffset，可为负），仅作带位置代数
+            const int tx = _leftMargin + tL.x() + pl->col * _fontWidth + pl->cellXOff;
+            const int ty = rowTop - item.rowOffset * _fontHeight + pl->cellYOff;
+            const int fullW = pl->cols * _fontWidth;
+            const int fullH = pl->rows * _fontHeight;
+            const int targetW = qMin(fullW, rightEdge - tx); // 超右缘截断
+            if (targetW <= 0)
+                continue;
+            // 目标带 = 本行单元格行带 ∩ 目标矩形纵向区间
+            const int bandTop = qMax(rowTop, ty);
+            const int bandBot = qMin(rowTop + _fontHeight, ty + fullH);
+            if (bandTop >= bandBot)
+                continue;
+            const QRect target(tx, bandTop, targetW, bandBot - bandTop);
+            if (!target.intersects(rect))
+                continue;
+            // 源带：纵向按目标高度比例取条，横向沿用右缘截断等比收缩（整数换算同旧式）
+            const int srcBandTop = src.y() + int(qint64(src.height()) * (bandTop - ty) / fullH);
+            const int srcBandBot = src.y() + int(qint64(src.height()) * (bandBot - ty) / fullH);
+            if (srcBandTop >= srcBandBot)
+                continue;
+            QRect s(src.x(), srcBandTop, src.width(), srcBandBot - srcBandTop);
+            if (fullW > targetW)
+                s.setWidth(int(qint64(src.width()) * targetW / fullW));
+            if (s.width() <= 0)
+                continue;
+            paint.drawImage(target, img->image, s); // 半透明按 z 序 alpha 混合
+        }
     }
 }
 
