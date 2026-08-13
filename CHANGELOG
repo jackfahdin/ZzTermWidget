@@ -1,3 +1,19 @@
+ZzQTermWidget 脏区算法重写 / 2026-08-13
+=============================================
+ * updateImage 行内跨度级脏区：dirtyMask 两趟扫描合并为一趟 [minX,maxX] 跨度聚合，
+   脏 rect 只盖跨度 ±1 格（吸收宽字符尾部与字形越界），并纵向 ±max(1,_drawTextAdditionHeight)
+   像素扩展（吸收 CJK/斜体字形上下越界墨迹）；宽字符连排右扩锚定到连排末尾；
+   跨度紧邻斜体（RE_ITALIC）邻居时该行升级整行脏；双高行/含图行例外保持整行脏。
+ * 纯整屏滚动快路径：复用 scrollImage 既有像素搬迁与 _image 移位，moved 行仅错位检测
+   + memcpy 同步，新进 N 行走跨度比对；图像/选区/双高/备选屏/缩放/错位任一命中即回退。
+ * 内部开关 setScrollOptimizationEnabled（默认开，镜像 setTextBatchingEnabled 模式）与
+   lastDirtyRegion、scrollFastPathFrameCount 观测钩子（后者仅供测试证明快路径接管），
+   均不进公共头。
+ * 滚动帧像素比对采用 ≤32 灰度容差：位搬移后重绘边缘存在亚像素抗锯齿差异。
+ * 实测（本机，Release）：局部刷新 testLocalRefresh 0.074ms → 0.065ms（同新口径 A/B）；
+   整屏滚动快路径与全量比对两尺寸持平（24x80 ≈0.11ms、40x160 ≈0.32ms，收益低于
+   测量噪声，如实记录）；tst_rendering 增量重放像素等价零差异。
+
 ZzQTermWidget Kitty 图形协议（核心子集） / 2026-08-13
 =============================================
  * 终端内嵌位图显示（Kitty 图形协议核心子集）：APC 通道（ESC _ G ... ESC \）分块传输，

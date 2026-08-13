@@ -75,8 +75,8 @@ target_link_libraries(your_target PRIVATE ZzQTermWidget::qtermwidget)
 
 性能与渲染回归：
 
-- `tst_benchmark`：渲染性能基线（解析吞吐 / 全量重绘 / TUI 局部重绘），进 ctest 但无硬性性能断言，数字仅 Release 构建下有参考意义。
-- `tst_rendering`：像素等价性测试，批次聚合与 Legacy 两条绘制路径双渲染逐像素比对，是绘制路径改造的安全网。
+- `tst_benchmark`：渲染性能基线（解析吞吐 / 全量重绘 / 局部刷新 / 整屏滚动），真实增量口径（updateImage 比对段 + lastDirtyRegion 离屏渲染段），进 ctest 但无硬性性能断言，数字仅 Release 构建下有参考意义。
+- `tst_rendering`：像素等价性测试，批次聚合与 Legacy 两条绘制路径双渲染逐像素比对，以及跨度脏区/滚动快路径的增量重放等价（脏区渲染到上帧 vs 全量渲染），是绘制路径改造的安全网。
 
 一些注意：
 
