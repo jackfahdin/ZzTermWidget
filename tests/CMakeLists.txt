@@ -7,6 +7,7 @@ set(QTERMWIDGET_TESTS
     tst_protocols
     tst_benchmark
     tst_rendering
+    tst_sixel
 )
 
 foreach(test_name IN LISTS QTERMWIDGET_TESTS)

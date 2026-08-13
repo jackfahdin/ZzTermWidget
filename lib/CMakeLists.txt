@@ -14,6 +14,7 @@ set(QTERMWIDGET_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/emulation/Emulation.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/emulation/Vt102Emulation.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/emulation/Screen.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/emulation/SixelDecoder.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/emulation/ScreenWindow.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/display/TerminalDisplay.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/widget/qtermwidget.cpp
@@ -34,6 +35,7 @@ set(QTERMWIDGET_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/emulation/Emulation.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/emulation/Vt102Emulation.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/emulation/Screen.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/emulation/SixelDecoder.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/emulation/ScreenWindow.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/display/TerminalDisplay.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qtermwidget.h
