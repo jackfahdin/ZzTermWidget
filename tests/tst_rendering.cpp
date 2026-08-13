@@ -19,6 +19,9 @@ class TestRendering : public QObject
 private slots:
     void testBatchingPixelEquivalence();
     void testBatchingPixelEquivalenceAfterPartialUpdate();
+    void testSpanDirtyPixelEquivalence_data();
+    void testSpanDirtyPixelEquivalence();
+    void testSpanDirtySelectionFrame();
 };
 
 /**
@@ -124,6 +127,200 @@ void TestRendering::testBatchingPixelEquivalenceAfterPartialUpdate()
         legacy.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-legacy-partial.png")));
     }
     QCOMPARE(batched, legacy);
+}
+
+/**
+ * @brief 全量离屏渲染：黑底全新一帧（调用方负责首帧 warmup 吃掉 _drawTextTestFlag）。
+ */
+static QImage renderFull(TerminalDisplay &display)
+{
+    QImage image(display.size(), QImage::Format_ARGB32);
+    image.fill(Qt::black);
+    display.render(&image);
+    return image;
+}
+
+/**
+ * @brief 增量重放：仅把上一次 updateImage() 的脏区渲染到上一帧图像上。
+ * @param display 目标显示组件（须刚完成一帧 updateImage()）。
+ * @param base 上一帧的全量渲染结果。
+ * @return 重放后的图像；与 renderFull() 逐像素相等即增量路径无遗漏脏区。
+ * @note QWidget::render(target, offset, region) 会把 region 包围盒内容画到 offset 处
+ *       （实测：区域 y155 在 offset (0,0) 下落到图像 y0），因此 offset 必须传
+ *       包围盒左上角才能原位重放。
+ */
+static QImage replayDirtyRegion(TerminalDisplay &display, const QImage &base)
+{
+    QImage image = base;
+    const QRegion dirty = display.lastDirtyRegion();
+    if (!dirty.isEmpty())
+        display.render(&image, dirty.boundingRect().topLeft(), dirty);
+    return image;
+}
+
+/**
+ * @brief 驱动一帧：刷新 ScreenWindow 缓冲并经 outputChanged 信号触发 updateImage()。
+ * @note 测试内无事件循环，Emulation 的 bufferedUpdate 定时器不会触发，
+ *       ScreenWindow 的 _windowBuffer 只在 notifyOutputChanged() 后才会重建；
+ *       直接调 updateImage() 只会拿到陈旧缓冲比对出空脏区，并把 _lastDirtyRegion
+ *       冲掉。notifyOutputChanged() 走的正是生产环境 outputChanged→updateImage 通路。
+ */
+static void pumpFrame(ScreenWindow *win)
+{
+    win->notifyOutputChanged();
+}
+
+void TestRendering::testSpanDirtyPixelEquivalence_data()
+{
+    QTest::addColumn<QByteArray>("setup");     // 首帧内容后的追加构造（双高行/图像等）
+    QTest::addColumn<QByteArray>("edit");      // 本帧编辑负载
+    QTest::addColumn<int>("editRow");          // 编辑所在行（0 起）
+    QTest::addColumn<int>("editCells");        // 预期脏跨度格数上限；0 = 不做形状断言
+    QTest::addColumn<bool>("pixelCheck");      // false = 只做形状断言，跳过逐像素比对
+
+    QTest::newRow("单行少格")
+            << QByteArray()
+            << QByteArray("\033[5;10H\033[38;5;45mEDIT\033[0m") << 4 << 6 << true;
+    QTest::newRow("宽字符跨界")
+            << QByteArray()
+            << QByteArray("\033[4;21H\xe7\x95\xbb") << 3 << 0 << true; // CJK 行内改写宽字符"画"
+    QTest::newRow("斜体越界")
+            << QByteArray()
+            << QByteArray("\033[2;10H\033[3mITAL\033[0m") << 1 << 0 << true;
+    // 双高行不做逐像素比对：DECDH 片段经 scale(1,2) 世界变换绘制，墨迹落在 2×行坐标处
+    // （calculateTextArea 只对原点逆映射，top 项被放大），任何行矩形脏区都盖不住实际墨迹，
+    // 属于改造前就存在的绘制几何怪癖；此处只验证"双高行整行脏"的行为不退化
+    QTest::newRow("双高行整行脏")
+            << QByteArray("\033[10;1H\033#3double high line\r\n\033#4double high line\r\n")
+            << QByteArray("\033[10;3HZ") << 9 << -1 << false;
+    QTest::newRow("含图像行")
+            << QByteArray("\033[12;1H\033Pq#0;2;100;0;0#0!8~-!8~-!8~\033\\")
+            << QByteArray("\033[12;20HIMG") << 11 << 0 << true;
+}
+
+/**
+ * @brief 跨度脏区：编辑帧的增量重放与全量渲染逐像素相等；单行少格场景的脏带
+ *        宽度不得超过（编辑格数 + 两侧各 1 格扩展 + 1 格余量）× 格宽（形状证据）。
+ * @note 形状断言即本任务的先失败测试：整行脏区旧实现下脏带恒为整行宽，必然失败。
+ */
+void TestRendering::testSpanDirtyPixelEquivalence()
+{
+    QFETCH(QByteArray, setup);
+    QFETCH(QByteArray, edit);
+    QFETCH(int, editRow);
+    QFETCH(int, editCells);
+    QFETCH(bool, pixelCheck);
+
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initRenderEnv(emu, win, display);
+    // sixel 场景需要单元格像素尺寸（镜像 tst_sixel 的 initSixelRenderEnv）
+    emu.setCellPixelSize(display.cellPixelWidth(), display.cellPixelHeight());
+    const QByteArray content = buildRenderContent();
+    emu.receiveData(content.constData(), int(content.size()));
+    if (!setup.isEmpty())
+        emu.receiveData(setup.constData(), int(setup.size()));
+    // 首帧驱动两次：第一次 updateImage 才创建 _image 并把 display 行数同步给
+    // ScreenWindow（updateImageSize→setWindowLines），而 updateLineProperties 在信号
+    // 链中先于 updateImage 执行，单泵一次拿到的是旧几何下的行属性（双倍宽/高行
+    // 会被当普通行渲染）；第二次泵入行属性与视图位置才全部就位
+    pumpFrame(win);
+    pumpFrame(win);
+    renderFull(display); // warmup：吃掉 _drawTextTestFlag 一次性度量
+    const QImage base = renderFull(display);
+
+    emu.receiveData(edit.constData(), int(edit.size()));
+    pumpFrame(win);
+
+    if (editCells > 0) {
+        const int fh = display.fontHeight();
+        const int rowTop = display.contentsRect().top() + display.margin() + editRow * fh;
+        const QRect band(0, rowTop, display.width(), fh);
+        int maxWidth = 0;
+        const auto rects = display.lastDirtyRegion();
+        for (const QRect &r : rects)
+            if (r.intersects(band))
+                maxWidth = qMax(maxWidth, r.width());
+        QVERIFY2(maxWidth > 0 && maxWidth <= (editCells + 3) * display.fontWidth(),
+                 qPrintable(QStringLiteral("编辑行脏带宽 %1 超出跨度上限 %2")
+                            .arg(maxWidth).arg((editCells + 3) * display.fontWidth())));
+    }
+
+    if (editCells == -1) {
+        // 双高行形状断言：编辑触及双高行时，该行及其另一半都必须整行置脏
+        const int fh = display.fontHeight();
+        const int fullWidth = display.fontWidth() * 80; // 窗口 80 列
+        const int top0 = display.contentsRect().top() + display.margin();
+        const auto rects = display.lastDirtyRegion();
+        for (const int row : {editRow, editRow + 1}) {
+            const QRect band(0, top0 + row * fh, display.width(), fh);
+            int maxWidth = 0;
+            for (const QRect &r : rects)
+                if (r.intersects(band))
+                    maxWidth = qMax(maxWidth, r.width());
+            QVERIFY2(maxWidth >= fullWidth,
+                     qPrintable(QStringLiteral("双高行第 %1 行脏带宽 %2 非整行宽 %3")
+                                .arg(row).arg(maxWidth).arg(fullWidth)));
+        }
+    }
+
+    if (!pixelCheck)
+        return;
+
+    const QImage incremental = replayDirtyRegion(display, base);
+    const QImage full = renderFull(display);
+    if (incremental != full) { // 排障辅助：落盘人工比对
+        incremental.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-span-incremental.png")));
+        full.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-span-full.png")));
+        base.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-span-base.png")));
+    }
+    QCOMPARE(incremental, full);
+}
+
+/**
+ * @brief 选区高亮帧：selectAll 把选区 rendition 烤进 newimg，逐格比对捕获，
+ *        增量重放与全量渲染仍逐像素相等。
+ * @note 内容刻意用普通文本+SGR 颜色行：双倍宽/高行的世界变换墨迹会越出行矩形
+ *       （详见 testSpanDirtyPixelEquivalence_data 的 DECDH 注释），选区帧只做
+ *       像素等价安全网，不混入变换路径怪癖。
+ */
+void TestRendering::testSpanDirtySelectionFrame()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initRenderEnv(emu, win, display);
+    // 离屏隐藏部件的 resize 不触发 resizeEvent，_lines/_columns 要等首帧 updateImage
+    // 才重算；先泵一帧让几何就位再对齐 Screen 尺寸。selectAll 按 display 行列数取
+    // 选区文本，Screen 尺寸不齐会越界读 screenLines（initRenderEnv 的 24 行 <
+    // display 42 行）
+    pumpFrame(win);
+    emu.setImageSize(display.lines(), display.columns());
+    QByteArray content;
+    content += "\033[H";
+    content += "plain ascii text row\r\n";
+    content += "\033[1;4mstyled: bold underline\033[0m\r\n";
+    content += "\033[38;5;196m256color fg\033[0m \033[48;2;10;200;30mrgb bg\033[0m\r\n";
+    content += "CJK 宽字符混排 abc 中文测试 123\r\n";
+    content += "last line\r\n";
+    emu.receiveData(content.constData(), int(content.size()));
+    pumpFrame(win);
+    pumpFrame(win); // 双泵就位行属性/视图几何（同上）
+    renderFull(display); // warmup
+    const QImage base = renderFull(display);
+
+    display.selectAll();
+    pumpFrame(win);
+
+    const QImage incremental = replayDirtyRegion(display, base);
+    const QImage full = renderFull(display);
+    if (incremental != full) { // 排障辅助：落盘人工比对
+        incremental.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-sel-incremental.png")));
+        full.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-sel-full.png")));
+        base.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-sel-base.png")));
+    }
+    QCOMPARE(incremental, full);
 }
 
 QTEST_MAIN(TestRendering)
