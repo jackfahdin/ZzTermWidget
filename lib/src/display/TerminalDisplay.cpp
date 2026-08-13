@@ -1119,6 +1119,9 @@ void TerminalDisplay::drawStyledUnderline(QPainter &painter, const QRect &rect,
     switch (style->underlineStyle()) {
     case UNDERLINE_DOUBLE: {
         // 双线：第二条线置于首线下方，线间距 = 线宽（下限 1px）
+        // 与波浪分支同一防护：极端字体度量下第二条线可能越出格底 1-2px，
+        // 裁剪在片段 rect 内，避免增量重放与全量渲染不一致
+        painter.setClipRect(rect, Qt::IntersectClip);
         painter.setPen(pen);
         const qreal y2 = y0 + lineWidth + qMax<qreal>(1.0, lineWidth);
         painter.drawLine(QPointF(left, y0), QPointF(right, y0));
