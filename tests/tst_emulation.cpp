@@ -49,6 +49,7 @@ private slots:
     void testSixelAbortOnEsc();
     void testSixelOversizedStreamDropped();
     void testNonSixelDcsUnaffected();
+    void testCharacterUnderlineEquality();
 };
 
 /**
@@ -850,6 +851,33 @@ void TestEmulation::testNonSixelDcsUnaffected()
     Screen *scr = emu.createWindow()->screen();
     QVERIFY(scr->imagePlacements(0).isEmpty());
     QVERIFY(firstLineText(emu, 80).startsWith(QStringLiteral("OK")));
+}
+
+/**
+ * @brief Character 相等性必须纳入下划线样式位与 underlineColor。
+ * @note 防脏区漏检回归：updateImage 逐格比对走 operator!=，片段合并走逐字段比较；
+ *       漏掉 underlineColor 会导致"仅改下划线色"的帧不重绘（显示事故）。
+ */
+void TestEmulation::testCharacterUnderlineEquality()
+{
+    Character a, b;
+    QVERIFY(a == b);
+    QVERIFY(a.equalsFormat(b));
+    QCOMPARE(a.underlineStyle(), UNDERLINE_SINGLE);
+    QVERIFY(!a.hasCustomUnderlineColor());
+
+    // 仅样式位不同（波浪下划线）
+    b.rendition |= RE_UNDERLINE | (UNDERLINE_CURLY << 11);
+    QVERIFY(a != b);
+    QVERIFY(!a.equalsFormat(b));
+    QCOMPARE(b.underlineStyle(), UNDERLINE_CURLY);
+
+    // 仅下划线色不同
+    Character c;
+    c.underlineColor = CharacterColor(COLOR_SPACE_RGB, (1 << 16) | (2 << 8) | 3);
+    QVERIFY(a != c);
+    QVERIFY(!a.equalsFormat(c));
+    QVERIFY(c.hasCustomUnderlineColor());
 }
 
 QTEST_GUILESS_MAIN(TestEmulation)

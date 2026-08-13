@@ -48,6 +48,19 @@ static const int LINE_DOUBLEHEIGHT     = (1 << 2);
 #define RE_CONCEAL         (1 << 9)
 #define RE_OVERLINE        (1 << 10)
 
+/**
+ * @brief 下划线样式掩码：rendition 位 11-13 存 UNDERLINE_* 取值，位 14-15 保留。
+ * @note RE_UNDERLINE（位 2）保留为"有下划线"汇总位：任何非关样式都置位。
+ */
+#define RE_UNDERLINE_STYLE_MASK (7 << 11)
+
+/** @brief 下划线样式取值（SGR 4:n 子参数映射 n-1，存于 rendition 位 11-13）。 */
+static const int UNDERLINE_SINGLE = 0; ///< 单线（默认）
+static const int UNDERLINE_DOUBLE = 1; ///< 双线
+static const int UNDERLINE_CURLY  = 2; ///< 波浪线
+static const int UNDERLINE_DOTTED = 3; ///< 点线
+static const int UNDERLINE_DASHED = 4; ///< 虚线
+
 class ScreenWindow;
 
 /**
@@ -93,6 +106,27 @@ public:
     CharacterColor  backgroundColor;
 
     /**
+     * @brief 独立下划线颜色（SGR 58）；COLOR_SPACE_DEFAULT 表示跟随前景色（SGR 59 复位态）。
+     * @note 不参与 RE_REVERSE 前景/背景交换；绘制时 DEFAULT 回落片段实际文本色。
+     */
+    CharacterColor underlineColor = CharacterColor(COLOR_SPACE_DEFAULT, DEFAULT_FORE_COLOR);
+
+    /**
+     * @brief 返回下划线样式（rendition 位 11-13）。
+     * @return UNDERLINE_* 取值之一；仅当 RE_UNDERLINE 置位时有意义。
+     */
+    inline int underlineStyle() const {
+        return (rendition >> 11) & 0x7;
+    }
+
+    /**
+     * @brief 返回 true 表示设置了独立下划线色（SGR 58）；false = 跟随前景色。
+     */
+    inline bool hasCustomUnderlineColor() const {
+        return underlineColor.isValid() && underlineColor._colorSpace != COLOR_SPACE_DEFAULT;
+    }
+
+    /**
      * Returns true if this character has a transparent background when
      * it is drawn with the specified @p palette.
      */
@@ -134,14 +168,16 @@ inline bool operator == (const Character& a, const Character& b) {
     return a.character == b.character &&
            a.rendition == b.rendition &&
            a.foregroundColor == b.foregroundColor &&
-           a.backgroundColor == b.backgroundColor;
+           a.backgroundColor == b.backgroundColor &&
+           a.underlineColor == b.underlineColor;
 }
 
 inline bool operator != (const Character& a, const Character& b) {
     return a.character != b.character ||
            a.rendition != b.rendition ||
            a.foregroundColor != b.foregroundColor ||
-           a.backgroundColor != b.backgroundColor;
+           a.backgroundColor != b.backgroundColor ||
+           a.underlineColor != b.underlineColor;
 }
 
 inline bool Character::isTransparent(const ColorEntry* base) const {
@@ -154,7 +190,8 @@ inline bool Character::isTransparent(const ColorEntry* base) const {
 inline bool Character::equalsFormat(const Character& other) const {
     return backgroundColor==other.backgroundColor &&
            foregroundColor==other.foregroundColor &&
-           rendition==other.rendition;
+           rendition==other.rendition &&
+           underlineColor==other.underlineColor;
 }
 
 inline ColorEntry::FontWeight Character::fontWeight(const ColorEntry* base) const {
