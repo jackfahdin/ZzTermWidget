@@ -469,12 +469,17 @@ void TestRendering::testScrollFastPathPixelEquivalence()
     QCOMPARE(win->screen()->getLines(), display.lines());
 
     int lineNo = display.lines() + 10;
+    int expectedFastPathFrames = 0;
     const int scrollSteps[] = {1, 4, 3}; // 连续滚动 1 行与 N 行
     for (const int n : scrollSteps) {
         const QByteArray out = buildScrollPayload(lineNo, n);
         lineNo += n;
         emu.receiveData(out.constData(), int(out.size()));
         pumpScrollFrame(win);
+
+        // 快路径确已接管本帧（纯滚动无可观测行为差异，以命中计数为证据）
+        ++expectedFastPathFrames;
+        QCOMPARE(display.scrollFastPathFrameCount(), expectedFastPathFrames);
 
         const int band = display.lastDirtyRegion().boundingRect().height();
         QVERIFY2(band > 0 && band <= (n + 2) * display.fontHeight(),
@@ -506,7 +511,9 @@ void TestRendering::testScrollMixedContentFallback()
     emu.receiveData(frame.constData(), int(frame.size()));
     pumpScrollFrame(win);
 
-    // 回退证据：视图第 10 行（0 起 9）行带必须在脏区内
+    // 回退证据一：错位检测命中，快路径未接管本帧
+    QCOMPARE(display.scrollFastPathFrameCount(), 0);
+    // 回退证据二：视图第 10 行（0 起 9）行带必须在脏区内
     const int fh = display.fontHeight();
     const int rowTop = display.contentsRect().top() + display.margin();
     const QRect band9(0, rowTop + 9 * fh, display.width(), fh);
@@ -552,7 +559,9 @@ void TestRendering::testScrollImageFallback()
     emu.receiveData(out.constData(), int(out.size()));
     pumpScrollFrame(win);
 
-    // 回退证据：新视图含图行（补画）与滚动前视图含图行（抹除残留）都在脏区内
+    // 回退证据一：含图帧快路径未接管
+    QCOMPARE(display.scrollFastPathFrameCount(), 0);
+    // 回退证据二：新视图含图行（补画）与滚动前视图含图行（抹除残留）都在脏区内
     const int fh = display.fontHeight();
     const int rowTop = display.contentsRect().top() + display.margin();
     const int newTop = win->currentLine();
@@ -595,7 +604,10 @@ void TestRendering::testScrollSelectionFallback()
     emu.receiveData(out.constData(), int(out.size()));
     pumpScrollFrame(win);
 
-    // 回退证据：选区反转消退，脏区远大于新进 2 行行带
+    // 回退证据一：选区帧快路径未接管（选区被滚动清除前 isClearSelection 不成立，
+    // 清除后 moved 行反转 rendition 消退、错位检测同样命中）
+    QCOMPARE(display.scrollFastPathFrameCount(), 0);
+    // 回退证据二：选区反转消退，脏区远大于新进 2 行行带
     QVERIFY(display.lastDirtyRegion().boundingRect().height() >= 20 * display.fontHeight());
 
     const QImage incremental = replayScrollFrame(display, base, 2);
@@ -637,6 +649,9 @@ void TestRendering::testScrollOptimizationSwitchAB()
         baseA = full;
         baseB = renderFull(displayB);
     }
+    // 快路径在 A 上逐帧接管、在 B 上被开关关闭（无可观测行为差异，以命中计数为证据）
+    QCOMPARE(displayA.scrollFastPathFrameCount(), 3);
+    QCOMPARE(displayB.scrollFastPathFrameCount(), 0);
 }
 
 QTEST_MAIN(TestRendering)

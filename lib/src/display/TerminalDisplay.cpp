@@ -1333,7 +1333,9 @@ void TerminalDisplay::updateImage() {
     // optimization - scroll the existing image where possible and
     // avoid expensive text drawing for parts of the image that
     // can simply be moved up or down
-    scrollImage(_screenWindow->scrollCount(), _screenWindow->scrollRegion());
+    const int scrollLines = _screenWindow->scrollCount();
+    const QRect scrollWindowRegion = _screenWindow->scrollRegion();
+    scrollImage(scrollLines, scrollWindowRegion);
     _screenWindow->resetScrollCount();
 
     if (!_image) {
@@ -1378,12 +1380,80 @@ void TerminalDisplay::updateImage() {
     const int prevViewTopLine = _imageViewTopLine;
     _imageViewTopLine = viewTopLine;
 
+    // 纯整屏滚动快路径判定：scrollImage 已完成像素搬迁与 _image 移位，
+    // 满足全部条件时 moved 行跳过跨度聚合（仅验证 + memcpy 同步）。
+    // 双高行探测：两半身必须成对重绘，不做像素搬迁假设（回退条件）
+    bool hasDoubleHeight = false;
+    for (int i = 0; i < _lineProperties.count() && i < linesToUpdate; ++i) {
+        if ((_lineProperties[i] & LINE_DOUBLEHEIGHT) != 0) {
+            hasDoubleHeight = true;
+            break;
+        }
+    }
+    // 有效滚动区高度：镜像 scrollImage 的钳制（区域下沿 ≤ _lines-2），并钳到
+    // linesToUpdate（windowLines 小于显示行数时验证区间不得越过 newimg 行界）。
+    // 验证区间必须与 scrollImage 实际 memmove 的行区间对齐：全屏滚动时
+    // scrollImage 只搬迁 [0, effScrollH-newRows)，紧随其后的 1 行未被搬迁
+    // （内容与移位后不符），须留给跨度聚合循环比对置脏
+    const int effScrollH = qMin(qMin(scrollWindowRegion.bottom(), this->_lines - 2)
+                                - scrollWindowRegion.top() + 1, linesToUpdate);
+    // scrollImage 把滚动区下沿钳到 _lines-2，全屏滚动时区域高度为 linesToUpdate-1
+    const bool fullScreenScroll = scrollWindowRegion.top() == 0
+            && scrollWindowRegion.height() >= linesToUpdate - 1;
+    bool fastScroll = _scrollOptimizationEnabled && scrollLines != 0
+            && qAbs(scrollLines) < effScrollH
+            && fullScreenScroll                       // 滚动区覆盖全内容区
+            && scr != nullptr && scr == _lastImageScreen // 备选屏切换帧回退
+            && !hasImages && !scr->graphicsDirty()    // 图像帧回退
+            && !hasDoubleHeight && !_resizing         // 双高行/缩放中回退
+            && _screenWindow->isClearSelection()      // 活动选区回退
+            && linesToUpdate == _usedLines && columnsToUpdate == _usedColumns; // 收缩区回退
+
+    // 行区间划分：上滚（scrollLines>0，图像上移）新进行在底部；
+    // 下滚（用户回看历史，图像下移）新进行在顶部
+    const int newRows = qAbs(scrollLines);
+    int movedBegin = 0;
+    int movedEnd = 0;
+    if (fastScroll) {
+        if (scrollLines > 0) {
+            movedBegin = 0;
+            movedEnd = effScrollH - newRows;
+        } else {
+            movedBegin = newRows;
+            movedEnd = effScrollH;
+        }
+        // 错位检测：已移位的 moved 行与 newimg 逐格比对（顺带 blink 扫描）；
+        // 任一格存在滚动外修改即回退全量路径
+        for (y = movedBegin; y < movedEnd && fastScroll; ++y) {
+            const Character *cur = &_image[y * this->_columns];
+            const Character *nw = &newimg[y * columns];
+            for (x = 0; x < columnsToUpdate; ++x) {
+                if ((nw[x].rendition & RE_BLINK) != 0)
+                    _hasBlinker = true;
+                if (nw[x] != cur[x]) {
+                    fastScroll = false;
+                    break;
+                }
+            }
+        }
+        if (fastScroll)
+            ++_scrollFastPathFrames; // 测试观测钩子：快路径真正接管的本帧
+    }
+
     // debugging variable, this records the number of lines that are found to
     // be 'dirty' ( ie. have changed from the old _image to the new _image ) and
     // which therefore need to be repainted
     for (y = 0; y < linesToUpdate; ++y) {
         const Character *currentLine = &_image[y * this->_columns];
         const Character *const newLine = &newimg[y * columns];
+
+        if (fastScroll && y >= movedBegin && y < movedEnd) {
+            // 纯滚动快路径：像素已由 scrollImage 搬迁、内容经错位检测确认一致；
+            // 仍 memcpy 同步，保持 _image 为 newimg 字节镜像的既有语义
+            memcpy((void *)currentLine, (const void *)newLine,
+                         columnsToUpdate * sizeof(Character));
+            continue;
+        }
 
         // 跨度聚合：一趟完成逐格比对、blink 扫描与 [minX,maxX] 聚合，取代原 dirtyMask
         // 两趟扫描与每帧堆分配。脏格邻居不再单独置位，改为出循环后跨度两侧各扩 1 格——
@@ -1513,6 +1583,7 @@ void TerminalDisplay::updateImage() {
 
     // update the parts of the display which have changed
     _lastDirtyRegion = dirtyRegion; // 测试/benchmark 观测钩子：记录本次帧脏区
+    _lastImageScreen = scr; // 备选屏切换帧检测（快路径回退条件）
     update(dirtyRegion);
 
     if (_hasBlinker && !_blinkTimer->isActive())
