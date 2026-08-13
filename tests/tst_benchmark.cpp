@@ -10,8 +10,12 @@
  * @brief 渲染性能 benchmark 基线：解析吞吐 / 全量重绘 / 局部刷新 / 整屏滚动四用例。
  * @note 不设硬性性能断言（机器差异大），仅保证可编译可运行；优化前后各跑一遍，
  *       数字人工对比并记入 CHANGELOG。数值仅在 Release 构建下有参考意义。
- * @note 局部刷新与整屏滚动为真实增量口径：receiveData 产帧 → updateImage()（脏区比对段）
- *       → 按 lastDirtyRegion() 离屏渲染（渲染段）；帧负载交替变化保证每次迭代都有真实脏区。
+ * @note 局部刷新与整屏滚动为真实增量口径：receiveData 产帧 → notifyOutputChanged()
+ *       驱动 updateImage()（脏区比对段）→ 按 lastDirtyRegion() 离屏渲染（渲染段）；
+ *       帧负载交替变化保证每次迭代都有真实脏区。
+ *       帧驱动必须走 notifyOutputChanged()（生产环境 outputChanged→updateImage 通路）：
+ *       循环内无事件循环，bufferedUpdate 定时器不触发，直接调 updateImage() 只会拿
+ *       陈旧 _windowBuffer 比对出空脏区（空 region 的 render 退化为整幅渲染）。
  */
 class TestBenchmark : public QObject
 {
@@ -150,7 +154,7 @@ void TestBenchmark::testLocalRefresh()
     QBENCHMARK {
         const QByteArray &frame = ((m_frame++ & 1) == 0) ? frameA : frameB;
         emu.receiveData(frame.constData(), int(frame.size()));
-        display.updateImage();   // 脏区比对段（public slot，绕过 bufferedUpdate 定时器）
+        win->notifyOutputChanged(); // 驱动本帧 updateImage()（脏区比对段），见文件头说明
         display.render(&image, QPoint(), display.lastDirtyRegion()); // 脏区渲染段
     }
 }
@@ -187,7 +191,7 @@ void TestBenchmark::testFullScreenScroll()
         const QByteArray out = buildScrollPayload(lineNo, 4);
         lineNo += 4;
         emu.receiveData(out.constData(), int(out.size()));
-        display.updateImage();
+        win->notifyOutputChanged(); // 驱动本帧 updateImage()，见文件头说明
         display.render(&image, QPoint(), display.lastDirtyRegion());
     }
 }
