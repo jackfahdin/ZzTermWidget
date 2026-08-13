@@ -97,6 +97,9 @@ private slots:
     void testZNegativeDrawnUnderText();
     void testZPositiveDrawnOverText();
     void testSameZOrderedByImageId();
+    // 离屏渲染（任务 4 审查修复）
+    void testCursorRedrawnOverImages();
+    void testPartialRepaintKeepsNonAnchorRows();
 };
 
 void TestKittyGraphics::testParseKeysAndDefaults()
@@ -876,6 +879,109 @@ void TestKittyGraphics::testSameZOrderedByImageId()
                      display.contentsRect().top() + display.margin(), cw, ch);
     const QColor center = frame.pixelColor(cell.center());
     QVERIFY(center.red() > 200 && center.green() < 80 && center.blue() < 80); // 红色（id 大者）在上
+}
+
+/**
+ * @brief 光标复绘正向路径：可见光标所在格被 z>=0 不透明图覆盖时，
+ *        光标块在图像之上复绘（格内出现光标色像素）。
+ * @note 审查修复：此前测试 2/3 隐藏光标，covered=true → drawCursor 的复绘路径无覆盖。
+ */
+void TestKittyGraphics::testCursorRedrawnOverImages()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initKittyRenderEnv(emu, win, display);
+    const int cw = display.cellPixelWidth();
+    const int ch = display.cellPixelHeight();
+
+    // 真彩白 'A' 后光标回 (0,0) 保持可见（默认配色表 SGR 37 白为 0xB2B2B2，达不到
+    // 下方 >180 阈值，故用真彩）；纯蓝 z=0 图覆盖同格（C=1 固定光标）
+    const QByteArray text = "\033[38;2;255;255;255mA\033[D";
+    emu.receiveData(text.constData(), int(text.size()));
+    placeKittyCellImage(emu, 3, 0, QColor(0, 0, 255), cw, ch);
+    display.updateImage();
+
+    // warmup 首帧吃掉 _drawTextTestFlag（setVTFont 置位的一次性字体探测，透明度 0 不可见）
+    QImage warmup(display.size(), QImage::Format_ARGB32);
+    warmup.fill(Qt::black);
+    display.render(&warmup);
+
+    QImage frame(display.size(), QImage::Format_ARGB32);
+    frame.fill(Qt::black);
+    display.render(&frame);
+
+    const QRect cell(display.contentsRect().left() + display.margin(),
+                     display.contentsRect().top() + display.margin(), cw, ch);
+    int whitePx = 0;
+    for (int y = cell.top(); y <= cell.bottom(); y++)
+        for (int x = cell.left(); x <= cell.right(); x++) {
+            const QColor c = frame.pixelColor(x, y);
+            if (c.red() > 180 && c.green() > 180 && c.blue() > 180)
+                whitePx++;
+        }
+    // 光标块（'A' 的真彩白前景色）填充宽 fontWidth、高 fontHeight-1，几乎整格；
+    // 若无复绘，蓝色图盖死光标，白色像素为 0
+    QVERIFY(whitePx > cw * ch / 2);
+}
+
+/**
+ * @brief 部分脏区回归：跨多行的 z>=0 kitty 图，仅非锚定行触发局部重绘时，
+ *        该行图像像素必须仍在（任意引用行参与绘制，靠重绘区域裁剪补画）。
+ * @note 回归：旧实现只在 rowOffset==0 的锚定行画整图，局部重绘非锚定行时
+ *       drawBackground 抹掉图像后不补画，造成图像破洞。
+ */
+void TestKittyGraphics::testPartialRepaintKeepsNonAnchorRows()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initKittyRenderEnv(emu, win, display);
+    const int cw = display.cellPixelWidth();
+    const int ch = display.cellPixelHeight();
+
+    // (0,0) 放 1 列 x 3 行纯绿 z=0 图（不带 C=1：光标移至图外，免干扰）
+    const QImage img = solidImage(cw, ch * 3, QColor(0, 255, 0));
+    QByteArray png;
+    QBuffer buf(&png);
+    buf.open(QIODevice::WriteOnly);
+    img.save(&buf, "PNG");
+    const QByteArray seq = kittySeq("a=T,f=100,i=8,z=0", png.toBase64());
+    emu.receiveData(seq.constData(), int(seq.size()));
+    display.updateImage();
+
+    // warmup 整帧：吃掉 _drawTextTestFlag，同时验证基线（第 1 行有绿色）
+    QImage warm(display.size(), QImage::Format_ARGB32);
+    warm.fill(Qt::black);
+    display.render(&warm);
+    const int cellX = display.contentsRect().left() + display.margin();
+    const int rowTop = display.contentsRect().top() + display.margin();
+    const auto isGreen = [](const QColor &c) {
+        return c.green() > 200 && c.red() < 80 && c.blue() < 80;
+    };
+    QVERIFY(isGreen(warm.pixelColor(cellX + cw / 2, rowTop + ch + ch / 2)));
+
+    // 只在第 1 行（放置的非锚定行）第 5 列打印字符：逐格脏区比对只标脏该行；
+    // 放置未增删，graphicsDirty 不置位（排除整屏补刷路径）
+    const QByteArray edit = "\033[2;6HX";
+    emu.receiveData(edit.constData(), int(edit.size()));
+    QVERIFY(!win->screen()->graphicsDirty());
+    display.updateImage();
+
+    // 模拟真实局部重绘：只把第 1 行行带作为重绘区域渲染
+    // （render 的 sourceRegion 默认平移到 targetOffset 原点；显式传 band 左上角保持坐标 1:1）
+    const QRect band(0, rowTop + ch, display.width(), ch);
+    QImage frame(display.size(), QImage::Format_ARGB32);
+    frame.fill(Qt::black);
+    display.render(&frame, band.topLeft(), QRegion(band));
+
+    // 非锚定行的图像区域（第 0 列）必须仍是绿色（未被 drawBackground 抹掉）
+    int greenPx = 0;
+    for (int y = rowTop + ch; y < rowTop + 2 * ch; y++)
+        for (int x = cellX; x < cellX + cw; x++)
+            if (isGreen(frame.pixelColor(x, y)))
+                greenPx++;
+    QVERIFY(greenPx > cw * ch / 2);
 }
 
 QTEST_MAIN(TestKittyGraphics)

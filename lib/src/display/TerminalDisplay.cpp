@@ -2005,20 +2005,25 @@ void TerminalDisplay::drawKittyPlacements(QPainter &paint, const QRect &rect, bo
                          qMax(0, (rect.bottom() - tL.y() - _topMargin) / _fontHeight));
     const int topLine = _screenWindow->currentLine();
 
-    // 收集可见放置：每个放置只从锚定行（rowOffset==0 的引用所在行）画一次
+    // 收集可见放置：任意引用行都参与绘制——经 y - rowOffset 回推锚定行的图像原点，
+    // 画出放置的完整目标矩形，由 QPainter 按重绘区域裁剪（局部重绘只脏非锚定行时
+    // 也能补画该行图像，避免 drawBackground 抹出破洞）；同一放置的多行引用去重，
+    // 防止整帧重绘时半透明放置被重复 alpha 混合
     struct Item {
         const KittyPlacement *pl;
-        int viewRow; ///< rowOffset==0 引用所在的视图行（锚定行的当前位置，随滚动迁移）
+        int viewRow; ///< 锚定行的视图行（= 引用行 y - rowOffset；可为负，QPainter 裁剪）
     };
     QVector<Item> items;
+    QVector<quint32> seenHandles; ///< 已收集的放置句柄（去重；放置数量小，线性查即可）
     for (int y = luy; y <= rly; y++) {
         for (const KittyPlacementRef &ref : screen->kittyRefs(topLine + y)) {
-            if (ref.rowOffset != 0)
-                continue;
             const KittyPlacement *pl = screen->kittyPlacement(ref.placementHandle);
             if (!pl || (pl->zIndex >= 0) != aboveText)
                 continue;
-            items.append({pl, y});
+            if (seenHandles.contains(ref.placementHandle))
+                continue;
+            seenHandles.append(ref.placementHandle);
+            items.append({pl, y - ref.rowOffset});
         }
     }
     // z-index 排序：z 升序；同 z 重叠时 id 小者更低层；同 z 同 id 按插入序
@@ -2061,6 +2066,8 @@ void TerminalDisplay::redrawCursorOverImages(QPainter &paint)
     Screen *screen = _screenWindow->screen();
     if (!screen)
         return;
+    if (!screen->hasImages())
+        return; // 无任何图像：不可能存在覆盖光标的 z>=0 放置（与下方"零开销短路"注释一致）
     const QPoint cp = cursorPosition(); // 视图坐标
     if (cp.x() < 0 || cp.x() >= _usedColumns || cp.y() < 0 || cp.y() >= _usedLines)
         return;
@@ -2076,13 +2083,13 @@ void TerminalDisplay::redrawCursorOverImages(QPainter &paint)
     bool covered = false;
     for (int y = 0; y < _usedLines && !covered; y++) {
         for (const KittyPlacementRef &ref : screen->kittyRefs(topLine + y)) {
-            if (ref.rowOffset != 0)
-                continue;
             const KittyPlacement *pl = screen->kittyPlacement(ref.placementHandle);
             if (!pl || pl->zIndex < 0)
                 continue;
+            // 任意引用行回推锚定行（与 drawKittyPlacements 同一换算）：
+            // 锚定行滚出视图顶部时，仍在视图内的下部行覆盖光标也要算 covered
             const QRect target(_leftMargin + tL.x() + pl->col * _fontWidth + pl->cellXOff,
-                               _topMargin + tL.y() + y * _fontHeight + pl->cellYOff,
+                               _topMargin + tL.y() + (y - ref.rowOffset) * _fontHeight + pl->cellYOff,
                                pl->cols * _fontWidth, pl->rows * _fontHeight);
             if (target.intersects(cursorRect)) {
                 covered = true;
