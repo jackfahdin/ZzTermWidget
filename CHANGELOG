@@ -1,3 +1,17 @@
+ZzQTermWidget Kitty 图形协议（核心子集） / 2026-08-13
+=============================================
+ * 终端内嵌位图显示（Kitty 图形协议核心子集）：APC 通道（ESC _ G ... ESC \）分块传输，
+   a=t/T/p/d/q 动作，f=100/32/24 像素格式，o=z zlib 压缩，i=/p= id 管理，源矩形裁剪 +
+   单元格偏移 + c/r 显示区 + z-index 分层（z<0 文本之下、z>=0 文本之上、光标之下），
+   d=a/A/i/I/c/C 大小写删除语义（大写释放像素数据），OK/ENOENT/EINVAL/ENOSPC 应答
+   （q=1 抑成功、q=2 抑失败），同 id 重传先删旧图及全部放置、新数据落库不自动显示。
+ * 统一图形锚定层：Sixel 存储泛化为协议无关结构（ScreenImage/_images），sixel/kitty 共享
+   行级引用、六个生命周期挂钩与 256MB 像素预算；预算紧张时优先淘汰无放置引用的图像
+   （仅单块命令超限时淘汰后重试一次；多块命令末块超限负载不可重放，直接回 ENOSPC）。
+ * 资源防护：单条 APC 数据流上限 350MB、单图宽/高上限 10000 像素。
+ * 明确不做：动画（a=f/a=c 回 EINVAL:unsupported action）、Unicode 占位符、
+   文件/共享内存传输（t=f/t/s，回 EINVAL:unsupported medium）、相对放置、图像编号 I=。
+
 ZzQTermWidget Sixel 图形协议 / 2026-08-13
 ===============================
  * 终端内嵌位图显示（Sixel）：DCS q 序列自研解码（RGB/HLS 调色板、RLE、光栅属性），
