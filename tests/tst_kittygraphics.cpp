@@ -77,6 +77,9 @@ private slots:
     void testScreenDeleteVariants();
     void testScreenReplaceSameImageAndPlacement();
     void testScreenAnonymousImageFreedWithPlacement();
+    // 预算淘汰（任务 2 审查补测）
+    void testScreenEvictionSkipsPlacedImages();
+    void testScreenEvictionLoopExhaustsBudget();
 };
 
 void TestKittyGraphics::testParseKeysAndDefaults()
@@ -324,8 +327,7 @@ void TestKittyGraphics::testScreenPlacementSurvivesScrollIntoHistory()
         scr.index();
     QVERIFY(scr.getHistLines() > 0);
     QCOMPARE(scr.kittyRefs(0).size(), 1);
-    QCOMPARE(scr.kittyPlacement(ph), scr.kittyPlacement(ph)); // 放置存活
-    QVERIFY(scr.kittyPlacement(ph) != nullptr);
+    QVERIFY(scr.kittyPlacement(ph) != nullptr); // 放置存活
     // 废弃历史（clearHistory 路径）：历史中的引用销毁，放置死亡；图像数据仍在
     scr.setScroll(HistoryTypeNone(), false);
     QCOMPARE(scr.kittyRefs(0).size(), 0);
@@ -449,6 +451,45 @@ void TestKittyGraphics::testScreenAnonymousImageFreedWithPlacement()
     scr.clearEntireLine(); // 销毁唯一放置 → 匿名图像数据随之释放
     QVERIFY(scr.image(handle) == nullptr);
     QVERIFY(!scr.hasImages());
+}
+
+void TestKittyGraphics::testScreenEvictionSkipsPlacedImages()
+{
+    Screen scr(24, 80);
+    // 两张 128MB 图恰好顶满 256MB 预算：图 1 带存活放置，图 2 无引用
+    QVERIFY(scr.kittyStoreImage(solidImage(4096, 8192, Qt::red), 1));
+    QVERIFY(scr.kittyStoreImage(solidImage(4096, 8192, Qt::green), 2));
+    QCOMPARE(scr.kittyPlace(scr.kittyImageHandle(1), 1, KittyPlacementParams{}),
+             KittyPlaceError::Ok);
+    QCOMPARE(scr.imageBytesRemaining(), 0); // 预算已满
+    // 新图入库触发淘汰：无引用的图 2 被优先淘汰腾出空间，带放置的图 1 不动
+    QVERIFY(scr.kittyStoreImage(solidImage(8, 16, Qt::blue), 3)); // 淘汰后新图成功入库
+    QVERIFY(scr.hasKittyImage(1));  // 有存活放置：不被淘汰
+    QVERIFY(!scr.hasKittyImage(2)); // 无放置引用：被淘汰
+    QVERIFY(scr.hasKittyImage(3));
+}
+
+void TestKittyGraphics::testScreenEvictionLoopExhaustsBudget()
+{
+    Screen scr(24, 80);
+    // 64MB + 64MB（均无引用，旧→新）+ 128MB（带放置）= 恰好 256MB
+    QVERIFY(scr.kittyStoreImage(solidImage(4096, 4096, Qt::red), 1));
+    QVERIFY(scr.kittyStoreImage(solidImage(4096, 4096, Qt::green), 2));
+    QVERIFY(scr.kittyStoreImage(solidImage(4096, 8192, Qt::blue), 3));
+    QCOMPARE(scr.kittyPlace(scr.kittyImageHandle(3), 3, KittyPlacementParams{}),
+             KittyPlaceError::Ok);
+    QCOMPARE(scr.imageBytesRemaining(), 0);
+    // 入库 100MB 新图：需按淘汰序连淘图 1、图 2 两张无引用图才够（淘汰循环覆盖）
+    QVERIFY(scr.kittyStoreImage(solidImage(4096, 6400, Qt::yellow), 4));
+    QVERIFY(!scr.hasKittyImage(1));
+    QVERIFY(!scr.hasKittyImage(2));
+    QVERIFY(scr.hasKittyImage(3)); // 带放置：淘到它时跳过
+    QVERIFY(scr.hasKittyImage(4));
+    // 现存 128MB（带放置）+ 100MB（无引用）；入库 130MB：淘掉图 4 后仍超限 → 失败
+    QVERIFY(!scr.kittyStoreImage(solidImage(4096, 8300, Qt::magenta), 5));
+    QVERIFY(!scr.hasKittyImage(5));
+    QVERIFY(!scr.hasKittyImage(4)); // 无引用的图 4 已被淘汰（失败路径也会真淘）
+    QVERIFY(scr.hasKittyImage(3));  // 带放置的图 3 始终不动
 }
 
 QTEST_MAIN(TestKittyGraphics)
