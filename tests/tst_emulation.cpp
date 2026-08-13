@@ -40,6 +40,13 @@ private slots:
     void testSixelResetClearsImages();
     void testSixelAlternateScreenIndependent();
     void testSixelPixelBudgetDrops();
+    void testSixelDcsAnchorsImage();
+    void testSixelAnchorAtCursorPosition();
+    void testSixelTextContinuesBelowImage();
+    void testSixelInvalidDataSilentlyDropped();
+    void testSixelAbortOnEsc();
+    void testSixelOversizedStreamDropped();
+    void testNonSixelDcsUnaffected();
 };
 
 /**
@@ -657,6 +664,131 @@ void TestEmulation::testSixelPixelBudgetDrops()
     scr->anchorImage(big, false); // 第 5 张：超 256MB 预算丢弃，光标不下移
     QVERIFY(scr->imagePlacements(4).isEmpty());
     QCOMPARE(scr->getCursorY(), 4);
+}
+
+/**
+ * @brief 构造最小 sixel 流：1x1 纯红图（#0 定义红色，'@' 写 1 像素）。
+ */
+static QByteArray minimalSixelStream()
+{
+    return QByteArray("\033Pq#0;2;100;0;0#0@\033\\");
+}
+
+/**
+ * @brief DCS q 分流：sixel 流解码锚定到当前光标位，文本光标移到图下。
+ */
+void TestEmulation::testSixelDcsAnchorsImage()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setCellPixelSize(8, 16);
+    const QByteArray seq = minimalSixelStream();
+    emu.receiveData(seq.constData(), int(seq.size()));
+    Screen *scr = emu.createWindow()->screen();
+    const auto placements = scr->imagePlacements(0);
+    QCOMPARE(placements.size(), 1);
+    QCOMPARE(placements[0].startCol, 0);
+    const SixelImage *img = scr->sixelImage(placements[0].imageId);
+    QVERIFY(img != nullptr);
+    QCOMPARE(img->image.size(), QSize(1, 1));
+    QCOMPARE(img->image.pixelColor(0, 0), QColor(255, 0, 0));
+    QCOMPARE(scr->getCursorY(), 1); // 光标移到图像之下
+}
+
+/**
+ * @brief 锚定位置跟随文本光标（含 DCS 参数 P2：`\033P2q` 填底语义被正确解析传递）。
+ */
+void TestEmulation::testSixelAnchorAtCursorPosition()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setCellPixelSize(8, 16);
+    // CSI 5;10 H 定位后锚定：应在第 5 行（索引 4）第 10 列（索引 9）
+    const QByteArray seq = QByteArray("\033[5;10H") + minimalSixelStream();
+    emu.receiveData(seq.constData(), int(seq.size()));
+    Screen *scr = emu.createWindow()->screen();
+    const auto placements = scr->imagePlacements(4);
+    QCOMPARE(placements.size(), 1);
+    QCOMPARE(placements[0].startCol, 9);
+    QCOMPARE(scr->getCursorY(), 5);
+}
+
+/**
+ * @brief 图像之后的文本从图下方继续输出。
+ */
+void TestEmulation::testSixelTextContinuesBelowImage()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setCellPixelSize(8, 16);
+    // 光栅声明 1x33（3 网格行）后输出文字：落在第 4 行（索引 3）
+    const QByteArray seq = QByteArray("\033Pq\"1;1;1;33#0;2;100;0;0#0@\033\\") + "after";
+    emu.receiveData(seq.constData(), int(seq.size()));
+    Screen *scr = emu.createWindow()->screen();
+    QCOMPARE(scr->getCursorY(), 3);
+    QCOMPARE(scr->getCursorX(), 5);
+    QVERIFY(scr->getScreenText(3, 0, 3, 4, 1).startsWith(QStringLiteral("after")));
+}
+
+/**
+ * @brief 空数据段解码失败：静默丢弃，后续文本不受影响。
+ */
+void TestEmulation::testSixelInvalidDataSilentlyDropped()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    const QByteArray seq = QByteArray("\033Pq\033\\") + "OK";
+    emu.receiveData(seq.constData(), int(seq.size()));
+    Screen *scr = emu.createWindow()->screen();
+    QVERIFY(scr->imagePlacements(0).isEmpty());
+    QVERIFY(firstLineText(emu, 80).startsWith(QStringLiteral("OK")));
+}
+
+/**
+ * @brief 数据段中途 ESC（非 ST）：中止该图；ESC 起始的后续序列照常解析。
+ */
+void TestEmulation::testSixelAbortOnEsc()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setCellPixelSize(8, 16);
+    const QByteArray seq = QByteArray("\033Pq#0;2;100;0;0#0@@@\033[2JOK");
+    emu.receiveData(seq.constData(), int(seq.size()));
+    Screen *scr = emu.createWindow()->screen();
+    for (int i = 0; i < 3; i++)
+        QVERIFY(scr->imagePlacements(i).isEmpty());
+    QVERIFY(firstLineText(emu, 80).startsWith(QStringLiteral("OK")));
+}
+
+/**
+ * @brief 数据流超 32MB 上限：吞到 ST 丢弃，后续字节流正常。
+ */
+void TestEmulation::testSixelOversizedStreamDropped()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setCellPixelSize(8, 16);
+    QByteArray seq = "\033Pq";
+    seq.append(QByteArray(33 * 1024 * 1024, '~')); // 超 32MB 上限
+    seq.append("\033\\OK");
+    emu.receiveData(seq.constData(), int(seq.size()));
+    Screen *scr = emu.createWindow()->screen();
+    QVERIFY(scr->imagePlacements(0).isEmpty());
+    QVERIFY(firstLineText(emu, 80).startsWith(QStringLiteral("OK")));
+}
+
+/**
+ * @brief 非 sixel DCS（DECRQSS 形态 DCS $ q）：不进入 sixel 通道，整条吞吃，后续正常。
+ */
+void TestEmulation::testNonSixelDcsUnaffected()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    const QByteArray seq = QByteArray("\033P$qm\033\\OK");
+    emu.receiveData(seq.constData(), int(seq.size()));
+    Screen *scr = emu.createWindow()->screen();
+    QVERIFY(scr->imagePlacements(0).isEmpty());
+    QVERIFY(firstLineText(emu, 80).startsWith(QStringLiteral("OK")));
 }
 
 QTEST_GUILESS_MAIN(TestEmulation)

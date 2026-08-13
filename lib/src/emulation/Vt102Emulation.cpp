@@ -33,6 +33,7 @@
 
 #include "KeyboardTranslator.h"
 #include "Screen.h"
+#include "SixelDecoder.h"
 
 Vt102Emulation::Vt102Emulation()
         : Emulation(), prevCC(0), _titleUpdateTimer(new QTimer(this)),
@@ -55,6 +56,7 @@ void Vt102Emulation::reset() {
     resetTokenizer();
     // 退出 token 丢弃模式：否则 reset 后仍会持续吞吃后续输入
     tokenDiscard = false;
+    abortSixel(); // 复位时丢弃未完成的 sixel 累积
     _kittyFlags = 0;
     _kittyFlagsStack.clear();
     resetModes();
@@ -260,6 +262,38 @@ void Vt102Emulation::initTokenizer() {
 
 // process an incoming unicode character
 void Vt102Emulation::receiveChar(char32_t cc) {
+    // Sixel 数据累积中：绕过 tokenizer 状态推导，直至 ST（ESC \）结束或 CAN/SUB/ESC 中止
+    if (_sixelActive) {
+        if (_sixelEscPending) {
+            _sixelEscPending = false;
+            if (cc == U'\\') { // ST：数据段结束，交解码器
+                finishSixel();
+                return;
+            }
+            // ESC 后非 '\'：按规格中止该图；ESC 与当前字节属于后续序列，重投正常解析
+            abortSixel();
+            receiveChar(ESC);
+            receiveChar(cc);
+            return;
+        }
+        if (cc == ESC) {
+            _sixelEscPending = true;
+            return;
+        }
+        if (cc == CNTL('X') || cc == CNTL('Z')) { // CAN / SUB：中止该图
+            abortSixel();
+            return;
+        }
+        if (cc >= 0x20 && cc < 0x7F) {
+            if (_sixelData.size() >= MAX_SIXEL_DATA_LENGTH)
+                _sixelOverflow = true; // 超上限：继续吞到 ST，ST 后丢弃
+            else if (!_sixelOverflow)
+                _sixelData.append(char(cc));
+        }
+        // 其余 C0 控制字符按 DEC 惯例在 DCS 数据段内忽略
+        return;
+    }
+
     if ((cc == U'\r') || (cc == U'\n'))
         dupDisplayCharacter(cc);
     if (cc == DEL)
@@ -321,6 +355,27 @@ void Vt102Emulation::receiveChar(char32_t cc) {
                 processOSC();
             resetTokenizer();
             return;
+        }
+        // Sixel 图形：DCS P1;P2;P3 q —— 'q' 为引导符，此前仅允许数字与 ';'
+        //（排除 DECRQSS 的 DCS $ q 等带中间字节的变体）。检测到后切换到独立
+        // 累积通道，数据不再进 tokenBuffer（sixel 流可远超 MAX_TOKEN_LENGTH）
+        if (Cse && tokenBuffer[1] == U'P' && cc == U'q') {
+            bool headerOk = true;
+            for (int i = 2; i < tokenBufferPos - 1; i++)
+                if ((tokenBuffer[i] < U'0' || tokenBuffer[i] > U'9') && tokenBuffer[i] != U';')
+                    headerOk = false;
+            if (headerOk) {
+                _sixelActive = true;
+                _sixelOverflow = false;
+                _sixelEscPending = false;
+                _sixelData.clear();
+                // 解析 P1;P2;P3：P1（宽高比）与 P3 按设计忽略，仅取 P2（透明底/填底语义）
+                const QString header = QString::fromUcs4(tokenBuffer + 2, tokenBufferPos - 3);
+                const auto parts = header.split(QLatin1Char(';'), Qt::KeepEmptyParts);
+                _sixelP2 = parts.size() >= 2 ? parts[1].toInt() : 0;
+                resetTokenizer();
+                return;
+            }
         }
         if (Cse) {
             prevCC = cc;
@@ -602,6 +657,35 @@ void Vt102Emulation::processOSC() {
         reportDecodingError();
         break;
     }
+}
+
+void Vt102Emulation::finishSixel()
+{
+    const bool overflow = _sixelOverflow;
+    const QByteArray data = std::move(_sixelData);
+    const int p2 = _sixelP2;
+    _sixelActive = false;
+    _sixelOverflow = false;
+    _sixelEscPending = false;
+    _sixelData.clear();
+    resetTokenizer();
+    if (overflow)
+        return; // 数据超上限：静默丢弃
+    const auto result = SixelDecoder::decode(data, p2);
+    if (!result)
+        return; // 解码失败/宽高超限：静默丢弃，不影响后续字节流
+    _currentScreen->anchorImage(result->image, result->transparentBackground);
+    // 无需显式刷新：receiveData 末尾的 bufferedUpdate 会经 outputChanged 通知显示层，
+    // Screen::_graphicsDirty 标志保证 updateImage 整屏标脏一次
+}
+
+void Vt102Emulation::abortSixel()
+{
+    _sixelActive = false;
+    _sixelOverflow = false;
+    _sixelEscPending = false;
+    _sixelData.clear();
+    resetTokenizer();
 }
 
 void Vt102Emulation::processWindowAttributeChange(int attributeToChange, QString newValue) {

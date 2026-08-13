@@ -25,6 +25,7 @@
 
 #include <cstdio>
 
+#include <QByteArray>
 #include <QKeyEvent>
 #include <QHash>
 #include <QTimer>
@@ -190,6 +191,25 @@ private:
   void kittyFlagsSet(quint32 flags, int mode);
   /** @brief 应答 CSI ? flags u 查询。 */
   void reportKittyKeyboardFlags();
+
+  /**
+   * @name Sixel 图形（DCS P1;P2;P3 q ... ST）累积状态
+   * @note sixel 数据量可达 MB 级，远超 tokenBuffer（MAX_TOKEN_LENGTH=100000），
+   *       检测到 sixel 头后切换到独立字节流缓冲，ST 后整体交 SixelDecoder。
+   */
+  ///@{
+  /** @brief sixel 数据缓冲上限（32MB）；超限置 _sixelOverflow 吞到 ST 后丢弃。 */
+  static constexpr int MAX_SIXEL_DATA_LENGTH = 32 * 1024 * 1024;
+  bool _sixelActive = false;     ///< 正在累积 sixel 数据段
+  bool _sixelOverflow = false;   ///< 数据超上限：吞到 ST 并丢弃
+  bool _sixelEscPending = false; ///< 上一字节为 ESC（等待判定 ST 或中止）
+  int _sixelP2 = 0;              ///< DCS 第二参数（透明底/填底语义）
+  QByteArray _sixelData;         ///< 'q' 之后、ST 之前的原始数据段
+  /** @brief ST 到达：解码并锚定（失败/超限静默丢弃），复位累积状态。 */
+  void finishSixel();
+  /** @brief CAN/SUB/ESC 中止：丢弃累积数据，复位累积状态。 */
+  void abortSixel();
+  ///@}
   /**
    * @brief 按 kitty 键盘协议编码按键事件。
    * @param event 按键事件。

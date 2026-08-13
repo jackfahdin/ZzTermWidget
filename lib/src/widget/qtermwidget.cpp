@@ -108,6 +108,11 @@ QTermWidget::QTermWidget(QWidget *msgParent, QWidget *parent)
     connect(m_emulation, &Emulation::programBracketedPasteModeChanged, m_terminalDisplay, &TerminalDisplay::setBracketedPasteMode);
     m_terminalDisplay->setBracketedPasteMode(m_emulation->programBracketedPasteMode());
     connect(m_emulation, &Emulation::synchronizedOutputModeChanged, m_terminalDisplay, &TerminalDisplay::setSynchronizedOutputMode);
+    // sixel 图像锚定需要真实单元格像素尺寸：字体度量变化时同步给仿真层，并立即同步一次初值
+    connect(m_terminalDisplay, &TerminalDisplay::changedFontMetricSignal, this, [this](int height, int width){
+        m_emulation->setCellPixelSize(width, height);
+    });
+    m_emulation->setCellPixelSize(m_terminalDisplay->cellPixelWidth(), m_terminalDisplay->cellPixelHeight());
     m_terminalDisplay->setScreenWindow(m_emulation->createWindow());
     connect(m_emulation, &Emulation::primaryScreenInUse, m_terminalDisplay, &TerminalDisplay::usingPrimaryScreen);
     connect(m_emulation, &Emulation::imageSizeChanged, this, [this](int /*height*/, int /*width*/){

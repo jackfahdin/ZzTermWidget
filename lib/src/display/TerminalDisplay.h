@@ -272,6 +272,11 @@ public:
      */
     int  fontWidth()    { return _fontWidth; }
 
+    /** @brief 返回当前字体度量下的单元格像素宽（sixel 锚定/绘制换算用）。 */
+    int cellPixelWidth() const { return _fontWidth; }
+    /** @brief 返回当前字体度量下的单元格像素高（sixel 锚定/绘制换算用）。 */
+    int cellPixelHeight() const { return _fontHeight; }
+
     void setSize(int cols, int lins);
     void setFixedSize(int cols, int lins);
 
