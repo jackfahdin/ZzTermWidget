@@ -92,7 +92,9 @@ std::optional<SixelDecodeResult> SixelDecoder::decode(const QByteArray &data, in
                 const int count = has ? qMax(n, 1) : 1;
                 const int bits = data[i] - 0x3F;
                 i++;
-                x += count;
+                // 饱和累加：x 最终只与 MAX_DIMENSION 比较以判定是否超限丢弃，
+                // 钳制到上限+1 已足够表达"超限"，消除巨大 RLE 计数累加的 int 溢出 UB
+                x = qMin(x + count, MAX_DIMENSION + 1);
                 extentX = qMax(extentX, x);
                 if (bits != 0) // 有置位位才贡献高度
                     extentY = qMax(extentY, y + bitHeight(bits));
@@ -190,7 +192,9 @@ std::optional<SixelDecodeResult> SixelDecoder::decode(const QByteArray &data, in
                 i++;
                 for (int k = 0; k < count; k++) {
                     putSixel(v);
-                    cx++;
+                    // 饱和累加：cx 只需分辨到 width（≤ MAX_DIMENSION）量级以正确截断写像素，
+                    // 钳制到上限+1 已足够，消除巨大 RLE 计数累加的 int 溢出 UB
+                    cx = qMin(cx + 1, MAX_DIMENSION + 1);
                 }
             }
         } else if (c == '"') { // 光栅属性第二遍跳过（尺寸已采纳）
