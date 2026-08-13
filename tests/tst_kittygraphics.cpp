@@ -1,6 +1,7 @@
 #include <QtTest>
 
 #include <QBuffer>
+#include <QFontDatabase>
 
 #include "KittyGraphicsParser.h"
 #include "Vt102Emulation.h"
@@ -92,6 +93,10 @@ private slots:
     void testRetransmitDeletesOldPlacements();
     void testDeleteViaByteStream();
     void testBudgetEnforcementAndEviction();
+    // 离屏渲染（任务 4）
+    void testZNegativeDrawnUnderText();
+    void testZPositiveDrawnOverText();
+    void testSameZOrderedByImageId();
 };
 
 void TestKittyGraphics::testParseKeysAndDefaults()
@@ -741,6 +746,136 @@ void TestKittyGraphics::testBudgetEnforcementAndEviction()
     QVERIFY(scr->hasKittyImage(1));
     QVERIFY(scr->hasKittyImage(3));
     QVERIFY(!scr->hasKittyImage(4));
+}
+
+/** @brief 构造 kitty 渲染测试环境（镜像 tst_sixel 的 initSixelRenderEnv）。 */
+static void initKittyRenderEnv(Vt102Emulation &emu, ScreenWindow *&win, TerminalDisplay &display)
+{
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setImageSize(24, 80);
+    win = emu.createWindow();
+    win->setWindowLines(24);
+    display.setVTFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    display.setBlinkingCursor(false);
+    display.setBlinkingTextEnabled(false);
+    display.setScreenWindow(win);
+    display.resize(800, 600);
+    emu.setCellPixelSize(display.cellPixelWidth(), display.cellPixelHeight());
+}
+
+/** @brief 喂一张恰好 1 单元格的纯色 kitty 图（z 可指定，C=1 固定光标）。 */
+static void placeKittyCellImage(Vt102Emulation &emu, quint32 id, qint32 z,
+                                const QColor &color, int cellW, int cellH)
+{
+    const QImage img = solidImage(cellW, cellH, color);
+    QByteArray png;
+    QBuffer buf(&png);
+    buf.open(QIODevice::WriteOnly);
+    img.save(&buf, "PNG");
+    const QByteArray keys = QByteArray("a=T,f=100,C=1,i=") + QByteArray::number(id)
+                            + ",z=" + QByteArray::number(z);
+    const QByteArray seq = kittySeq(keys, png.toBase64());
+    emu.receiveData(seq.constData(), int(seq.size()));
+}
+
+void TestKittyGraphics::testZNegativeDrawnUnderText()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initKittyRenderEnv(emu, win, display);
+    const int cw = display.cellPixelWidth();
+    const int ch = display.cellPixelHeight();
+
+    // 第 0 行第 0 列放纯红 z=-1 图（文本下层），同格打印白色 'A'
+    // （真彩白：默认配色表 SGR 37 白为 0xB2B2B2，达不到下方 >180 的白色断言阈值）
+    placeKittyCellImage(emu, 1, -1, QColor(255, 0, 0), cw, ch);
+    const QByteArray text = "\033[38;2;255;255;255mA";
+    emu.receiveData(text.constData(), int(text.size()));
+    display.updateImage();
+
+    QImage frame(display.size(), QImage::Format_ARGB32);
+    frame.fill(Qt::black);
+    display.render(&frame);
+
+    // 定位单元格像素矩形：左边距 + 内容区原点（与 drawContents 同源换算）
+    const QRect cell(display.contentsRect().left() + display.margin(),
+                     display.contentsRect().top() + display.margin(), cw, ch);
+    int redPx = 0, whitePx = 0;
+    for (int y = cell.top(); y <= cell.bottom(); y++)
+        for (int x = cell.left(); x <= cell.right(); x++) {
+            const QColor c = frame.pixelColor(x, y);
+            if (c.red() > 200 && c.green() < 80 && c.blue() < 80)
+                redPx++;
+            else if (c.red() > 180 && c.green() > 180 && c.blue() > 180)
+                whitePx++;
+        }
+    QVERIFY(redPx > cw * ch / 2); // 图像在文本之下：字形覆盖不到的区域仍是红色
+    QVERIFY(whitePx > 0);         // 字形笔画压在图像之上
+}
+
+void TestKittyGraphics::testZPositiveDrawnOverText()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initKittyRenderEnv(emu, win, display);
+    const int cw = display.cellPixelWidth();
+    const int ch = display.cellPixelHeight();
+
+    // 先隐藏光标（DECTCEM 关）：光标默认落在断言格 (0,0)，其复绘通道会往格内
+    // 补白色光标块，干扰白色像素断言；光标可见性与本用例无关
+    // 再打印白色 'A'（真彩白，理由同上），然后放纯蓝 z=0 图（文本上层，C=1 固定光标回第 0 列）
+    const QByteArray text = "\033[?25l\033[38;2;255;255;255mA\033[D";
+    emu.receiveData(text.constData(), int(text.size()));
+    placeKittyCellImage(emu, 2, 0, QColor(0, 0, 255), cw, ch);
+    display.updateImage();
+
+    QImage frame(display.size(), QImage::Format_ARGB32);
+    frame.fill(Qt::black);
+    display.render(&frame);
+
+    const QRect cell(display.contentsRect().left() + display.margin(),
+                     display.contentsRect().top() + display.margin(), cw, ch);
+    int whitePx = 0, bluePx = 0;
+    for (int y = cell.top(); y <= cell.bottom(); y++)
+        for (int x = cell.left(); x <= cell.right(); x++) {
+            const QColor c = frame.pixelColor(x, y);
+            if (c.red() > 180 && c.green() > 180 && c.blue() > 180)
+                whitePx++;
+            else if (c.blue() > 200 && c.red() < 80 && c.green() < 80)
+                bluePx++;
+        }
+    QCOMPARE(whitePx, 0);        // z>=0 图像盖住文本：字形笔画不可见
+    QVERIFY(bluePx > cw * ch / 2);
+}
+
+void TestKittyGraphics::testSameZOrderedByImageId()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initKittyRenderEnv(emu, win, display);
+    const int cw = display.cellPixelWidth();
+    const int ch = display.cellPixelHeight();
+
+    // 同一单元格叠两张 z=0 不透明图：i=1 绿（先）、i=2 红（后）。
+    // 同 z 重叠时 id 小者更低层 → 最终可见红色（i=2 在上）
+    // 隐藏光标（DECTCEM 关）：光标复绘通道会盖住断言格中心，干扰颜色断言
+    const QByteArray hideCursor = "\033[?25l";
+    emu.receiveData(hideCursor.constData(), int(hideCursor.size()));
+    placeKittyCellImage(emu, 1, 0, QColor(0, 255, 0), cw, ch);
+    placeKittyCellImage(emu, 2, 0, QColor(255, 0, 0), cw, ch);
+    display.updateImage();
+
+    QImage frame(display.size(), QImage::Format_ARGB32);
+    frame.fill(Qt::black);
+    display.render(&frame);
+
+    const QRect cell(display.contentsRect().left() + display.margin(),
+                     display.contentsRect().top() + display.margin(), cw, ch);
+    const QColor center = frame.pixelColor(cell.center());
+    QVERIFY(center.red() > 200 && center.green() < 80 && center.blue() < 80); // 红色（id 大者）在上
 }
 
 QTEST_MAIN(TestKittyGraphics)

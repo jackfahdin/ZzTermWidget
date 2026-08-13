@@ -749,12 +749,28 @@ private:
     // drawTextFragment() to draw the fragments
     void drawContents(QPainter &paint, const QRect &rect);
     /**
-     * @brief 绘制 sixel 图像层（文本层之下）。
+     * @brief 文本下层图形通道：sixel 图像切片 + kitty z<0 放置。
      * @note 在 paintEvent 中 drawBackground 之后、drawContents 之前调用；
-     *       按行级放置引用逐行裁剪图像切片（1 sixel 像素 = 1 设备像素），
-     *       多行引用拼出完整图；QPainter 自动裁剪到重绘区域。
+     *       切片与放置经 Screen::imagePlacements()/kittyRefs() 按可见行查询。
      */
-    void drawSixelImages(QPainter &paint, const QRect &rect);
+    void drawImagesBelowText(QPainter &paint, const QRect &rect);
+
+    /**
+     * @brief 文本上层图形通道：kitty z>=0 放置（半透明按 z 序 alpha 混合）。
+     * @note 在 paintEvent 中 drawContents 之后调用；光标块由 redrawCursorOverImages() 补绘，
+     *       保证"图像在文本之上、光标之下"。
+     */
+    void drawImagesAboveText(QPainter &paint, const QRect &rect);
+
+    /**
+     * @brief 光标复绘：z>=0 kitty 放置覆盖光标矩形时，在图像之上重绘光标块。
+     * @note 光标块内嵌于 drawContents 的文本逐片段绘制（RE_CURSOR），
+     *       上层图像会盖住它；本函数在 paintEvent 末尾按原样式补绘一次。
+     */
+    void redrawCursorOverImages(QPainter &paint);
+
+    /** @brief 按 aboveText 过滤绘制 kitty 放置（z 升序、同 z 按 imageId、再按插入序）。 */
+    void drawKittyPlacements(QPainter &paint, const QRect &rect, bool aboveText);
     /**
      * @brief 改造前的逐片段文本绘制路径（drawContents 批次聚合的像素基准与回退）。
      * @param paint 目标画笔。

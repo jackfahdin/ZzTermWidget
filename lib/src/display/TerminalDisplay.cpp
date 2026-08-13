@@ -51,6 +51,7 @@
 #include <QtDebug>
 
 #include <array>
+#include <algorithm>
 
 #include "Filter.h"
 #include "Screen.h"
@@ -1364,9 +1365,9 @@ void TerminalDisplay::updateImage() {
     char *dirtyMask = new char[columnsToUpdate + 2];
     QRegion dirtyRegion;
 
-    // sixel 图像切片不占字符单元格，逐格脏区比对感知不到它：视图滚动（回看历史）
+    // sixel/kitty 图像不占字符单元格，逐格脏区比对感知不到它们：视图滚动（回看历史）
     // 不改 Screen 字符状态、不置图形脏标志，字符内容相同的行会被判干净，造成旧
-    // 位置图像切片残留、新位置切片缺失。这里记录滚动前后两个视图的顶行，供循环内
+    // 位置图像残留、新位置图像缺失。这里记录滚动前后两个视图的顶行，供循环内
     // 对实际含图像放置的行强制置脏；无图时由 hasImages() 短路，无逐行查询开销。
     Screen *const scr = _screenWindow->screen();
     const bool hasImages = scr && scr->hasImages();
@@ -1417,12 +1418,14 @@ void TerminalDisplay::updateImage() {
             }
         }
 
-        // 滚动前后两个视图中实际含 sixel 图像放置的行强制整行标脏：
-        // 新视图含图行补画切片，滚动前视图含图行抹除残留切片
+        // 滚动前后两个视图中实际含图像放置的行强制整行标脏（sixel 切片与 kitty 放置同理）：
+        // 新视图含图行补画，滚动前视图含图行抹除残留
         if (hasImages && !updateLine
                 && (!scr->imagePlacements(viewTopLine + y).isEmpty()
+                    || !scr->kittyRefs(viewTopLine + y).isEmpty()
                     || (prevViewTopLine != viewTopLine
-                        && !scr->imagePlacements(prevViewTopLine + y).isEmpty()))) {
+                        && (!scr->imagePlacements(prevViewTopLine + y).isEmpty()
+                            || !scr->kittyRefs(prevViewTopLine + y).isEmpty())))) {
             updateLine = true;
         }
 
@@ -1722,9 +1725,11 @@ void TerminalDisplay::paintEvent(QPaintEvent *pe) {
     for (auto rect = regToDraw.begin(); rect != regToDraw.end(); rect++) {
         drawBackground(paint, *rect, _colorTable[DEFAULT_BACK_COLOR].color,
                                      true /* use opacity setting */);
-        drawSixelImages(paint, *rect); // sixel 图像在文本层之下（xterm/wezterm 语义）
+        drawImagesBelowText(paint, *rect); // sixel 图像 + kitty z<0：文本层之下
         drawContents(paint, *rect);
+        drawImagesAboveText(paint, *rect); // kitty z>=0：文本层之上、光标之下
     }
+    redrawCursorOverImages(paint); // 上层图像盖住光标块时补绘光标
     drawInputMethodPreeditString(paint, preeditRect());
 
     if (_isLocked) {
@@ -1938,7 +1943,7 @@ QRect TerminalDisplay::calculateTextArea(int topLeftX, int topLeftY,
                     _fontHeight};
 }
 
-void TerminalDisplay::drawSixelImages(QPainter &paint, const QRect &rect)
+void TerminalDisplay::drawImagesBelowText(QPainter &paint, const QRect &rect)
 {
     if (!_screenWindow)
         return;
@@ -1954,6 +1959,7 @@ void TerminalDisplay::drawSixelImages(QPainter &paint, const QRect &rect)
                          qMax(0, (rect.bottom() - tL.y() - _topMargin) / _fontHeight));
     const int topLine = _screenWindow->currentLine(); // 窗口第 0 行对应的绝对行
 
+    // sixel 图像切片（文本下层，xterm/wezterm 语义）
     for (int y = luy; y <= rly; y++) {
         const auto placements = screen->imagePlacements(topLine + y);
         for (const ImagePlacement &p : placements) {
@@ -1975,6 +1981,121 @@ void TerminalDisplay::drawSixelImages(QPainter &paint, const QRect &rect)
             paint.drawImage(target, img->image, source);
         }
     }
+
+    drawKittyPlacements(paint, rect, false); // kitty z<0 放置同在文本下层
+}
+
+void TerminalDisplay::drawImagesAboveText(QPainter &paint, const QRect &rect)
+{
+    drawKittyPlacements(paint, rect, true); // kitty z>=0 放置：文本之上、光标之下
+}
+
+void TerminalDisplay::drawKittyPlacements(QPainter &paint, const QRect &rect, bool aboveText)
+{
+    if (!_screenWindow)
+        return;
+    Screen *screen = _screenWindow->screen();
+    if (!screen)
+        return;
+
+    const QPoint tL = contentsRect().topLeft();
+    const int luy = qMin(_usedLines - 1,
+                         qMax(0, (rect.top() - tL.y() - _topMargin) / _fontHeight));
+    const int rly = qMin(_usedLines - 1,
+                         qMax(0, (rect.bottom() - tL.y() - _topMargin) / _fontHeight));
+    const int topLine = _screenWindow->currentLine();
+
+    // 收集可见放置：每个放置只从锚定行（rowOffset==0 的引用所在行）画一次
+    struct Item {
+        const KittyPlacement *pl;
+        int viewRow; ///< rowOffset==0 引用所在的视图行（锚定行的当前位置，随滚动迁移）
+    };
+    QVector<Item> items;
+    for (int y = luy; y <= rly; y++) {
+        for (const KittyPlacementRef &ref : screen->kittyRefs(topLine + y)) {
+            if (ref.rowOffset != 0)
+                continue;
+            const KittyPlacement *pl = screen->kittyPlacement(ref.placementHandle);
+            if (!pl || (pl->zIndex >= 0) != aboveText)
+                continue;
+            items.append({pl, y});
+        }
+    }
+    // z-index 排序：z 升序；同 z 重叠时 id 小者更低层；同 z 同 id 按插入序
+    std::sort(items.begin(), items.end(), [](const Item &a, const Item &b) {
+        if (a.pl->zIndex != b.pl->zIndex)
+            return a.pl->zIndex < b.pl->zIndex;
+        if (a.pl->imageId != b.pl->imageId)
+            return a.pl->imageId < b.pl->imageId;
+        return a.pl->serial < b.pl->serial;
+    });
+
+    const int rightEdge = _leftMargin + tL.x() + _usedColumns * _fontWidth;
+    for (const Item &item : items) {
+        const KittyPlacement *pl = item.pl;
+        const ScreenImage *img = screen->image(pl->imageHandle);
+        if (!img)
+            continue;
+        const QRect src = QRect(pl->srcX, pl->srcY, pl->srcW, pl->srcH) & img->image.rect();
+        if (src.isEmpty())
+            continue;
+        // 目标矩形：(col, 锚定行) 单元格起 + X/Y 像素偏移，尺寸 c×r 单元格，超右缘截断
+        const int tx = _leftMargin + tL.x() + pl->col * _fontWidth + pl->cellXOff;
+        const int ty = _topMargin + tL.y() + item.viewRow * _fontHeight + pl->cellYOff;
+        const int fullW = pl->cols * _fontWidth;
+        const QRect target(tx, ty, qMin(fullW, rightEdge - tx), pl->rows * _fontHeight);
+        if (target.width() <= 0 || !target.intersects(rect))
+            continue;
+        // 右侧截断时源矩形等比收缩，保持映射比例
+        QRect s = src;
+        if (fullW > target.width())
+            s.setWidth(int(qint64(src.width()) * target.width() / fullW));
+        paint.drawImage(target, img->image, s); // 半透明按 z 序 alpha 混合
+    }
+}
+
+void TerminalDisplay::redrawCursorOverImages(QPainter &paint)
+{
+    if (!_screenWindow)
+        return;
+    Screen *screen = _screenWindow->screen();
+    if (!screen)
+        return;
+    const QPoint cp = cursorPosition(); // 视图坐标
+    if (cp.x() < 0 || cp.x() >= _usedColumns || cp.y() < 0 || cp.y() >= _usedLines)
+        return;
+    const Character &ch = _image[loc(cp.x(), cp.y())];
+    if (!(ch.rendition & RE_CURSOR))
+        return; // 光标隐藏（MODE_Cursor 关）或视图回看中
+    const QPoint tL = contentsRect().topLeft();
+    const QRect cursorRect(_leftMargin + tL.x() + cp.x() * _fontWidth,
+                           _topMargin + tL.y() + cp.y() * _fontHeight,
+                           _fontWidth, _fontHeight);
+    // 仅当存在覆盖光标矩形的 z>=0 放置时才复绘（无图零开销短路）
+    const int topLine = _screenWindow->currentLine();
+    bool covered = false;
+    for (int y = 0; y < _usedLines && !covered; y++) {
+        for (const KittyPlacementRef &ref : screen->kittyRefs(topLine + y)) {
+            if (ref.rowOffset != 0)
+                continue;
+            const KittyPlacement *pl = screen->kittyPlacement(ref.placementHandle);
+            if (!pl || pl->zIndex < 0)
+                continue;
+            const QRect target(_leftMargin + tL.x() + pl->col * _fontWidth + pl->cellXOff,
+                               _topMargin + tL.y() + y * _fontHeight + pl->cellYOff,
+                               pl->cols * _fontWidth, pl->rows * _fontHeight);
+            if (target.intersects(cursorRect)) {
+                covered = true;
+                break;
+            }
+        }
+    }
+    if (!covered)
+        return;
+    const QColor fg = ch.foregroundColor.color(_colorTable);
+    const QColor bg = ch.backgroundColor.color(_colorTable);
+    bool invert = false;
+    drawCursor(paint, cursorRect, fg, bg, invert, true); // 与 preedit 路径同式的光标块复绘
 }
 
 void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
