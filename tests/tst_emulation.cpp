@@ -54,6 +54,7 @@ private slots:
     void testSgrUnderlineStyles();
     void testSgrUnderlineSemicolonVsColon();
     void testSgrUnderlineColor();
+    void testSgrTrueColorColon();
 };
 
 /**
@@ -975,6 +976,39 @@ void TestEmulation::testSgrUnderlineColor()
     QVERIFY(line[4].underlineColor == CharacterColor(COLOR_SPACE_RGB, (100 << 16) | (150 << 8) | 200));
     QVERIFY(line[5].underlineColor == CharacterColor(COLOR_SPACE_RGB, (1 << 16) | (2 << 8) | 3));
     QVERIFY(line[5].rendition & RE_BOLD); // 定长消费回归：尾巴未被吞
+}
+
+/**
+ * @brief SGR 38/48 冒口子参数形式：38:5:n、38:2[:色彩空间空位]:r:g:b 与 48 同款，
+ *        与分号形式落到同一 CharacterColor；参数不足整体忽略、不吞后续独立 SGR。
+ * @note 空位容忍与歧义口径同 58：恰好 3 分量的 38:2:0:g:b（r=0）解析正确；
+ *       r=0 且其后 ≥3 槽的写法按空位误吞（已声明遗留，见实现注释）。
+ */
+void TestEmulation::testSgrTrueColorColon()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    const char *seq =
+            "\033[38:5:196mA"            // 冒号 256 色前景
+            "\033[38:2::10:20:30mB"      // 冒号真彩前景（容忍色彩空间空位）
+            "\033[38:2:1:2:3mC"          // 冒号真彩（恰好 3 分量，无空位）
+            "\033[48:5:42mD"             // 冒号 256 色背景
+            "\033[48:2::100:150:200mE"   // 冒号真彩背景（容忍空位）
+            "\033[38;2;10;20;30mF"       // 分号真彩前景（与 B 等价性对照）
+            "\033[0m\033[38:5mG"         // 256 色槽不足：忽略，不吞后续（G 保持默认）
+            "\033[38:2:9:8mH"            // 真彩槽不足：忽略 38 与模式槽（9/8 按独立 SGR）
+            "\033[0m\033[38:2:0:1:2mI";  // r=0 恰好 3 分量：RGB(0,1,2) 解析正确
+    emu.receiveData(seq, int(std::strlen(seq)));
+    const QVector<Character> line = firstLineChars(emu, 80);
+    QCOMPARE(line[0].foregroundColor, CharacterColor(COLOR_SPACE_256, 196));
+    QCOMPARE(line[1].foregroundColor, CharacterColor(COLOR_SPACE_RGB, (10 << 16) | (20 << 8) | 30));
+    QCOMPARE(line[2].foregroundColor, CharacterColor(COLOR_SPACE_RGB, (1 << 16) | (2 << 8) | 3));
+    QCOMPARE(line[3].backgroundColor, CharacterColor(COLOR_SPACE_256, 42));
+    QCOMPARE(line[4].backgroundColor, CharacterColor(COLOR_SPACE_RGB, (100 << 16) | (150 << 8) | 200));
+    QCOMPARE(line[5].foregroundColor, line[1].foregroundColor); // 分号/冒号等价
+    QCOMPARE(line[6].foregroundColor, CharacterColor(COLOR_SPACE_DEFAULT, DEFAULT_FORE_COLOR));
+    QCOMPARE(line[7].foregroundColor, CharacterColor(COLOR_SPACE_DEFAULT, DEFAULT_FORE_COLOR));
+    QCOMPARE(line[8].foregroundColor, CharacterColor(COLOR_SPACE_RGB, (0 << 16) | (1 << 8) | 2));
 }
 
 QTEST_GUILESS_MAIN(TestEmulation)

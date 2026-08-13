@@ -604,6 +604,32 @@ void Vt102Emulation::receiveChar(char32_t cc) {
                 processToken(TY_CSI_PS(cc, 58), COLOR_SPACE_256, argv[i]);
             } else if (cc == 'm' && argv[i] == 58) {
                 // 参数不足的 58：忽略该参数，不吞后续独立 SGR
+            } else if (cc == 'm' && (argv[i] == 38 || argv[i] == 48) && i + 1 <= argc
+                       && argSeparators[i + 1] == ':') {
+                // SGR 38/48 冒口子参数：38:5:n / 38:2[:色彩空间空位]:r:g:b（必须先于
+                // 38/48 分号定长分支：38:2::r:g:b 拍平后同样满足 argv[i+1]==2；
+                // 顺序红线同 58）
+                const int colorCmd = argv[i];
+                if (argv[i + 1] == 5 && i + 2 <= argc) {
+                    processToken(TY_CSI_PS(cc, colorCmd), COLOR_SPACE_256, argv[i + 2]);
+                    i += 2;
+                } else if (argv[i + 1] == 2) {
+                    int j = i + 2;
+                    // 容忍色彩空间空位：38:2::r:g:b 拍平后该槽为 0（同 58 口径；
+                    // 已知歧义：r=0 且其后仍够 ≥3 槽的真彩写法被当空位整体跳过，
+                    // 与 58 一致，注释声明为遗留）
+                    if (j <= argc && argv[j] == 0 && argc - j >= 3)
+                        j++;
+                    if (argc - j >= 2) {
+                        processToken(TY_CSI_PS(cc, colorCmd), COLOR_SPACE_RGB,
+                                             (argv[j] << 16) | (argv[j + 1] << 8) | argv[j + 2]);
+                        i = j + 2;
+                    } else {
+                        i += 1; // 参数不足：忽略 38/48 与模式槽，其余参数按独立 SGR 解释
+                    }
+                } else {
+                    i += 1; // 未知 38/48 模式：忽略该参数与模式槽
+                }
             } else if (cc == 'm' && argc - i >= 4 && (argv[i] == 38 || argv[i] == 48) &&
                              argv[i + 1] == 2) {
                 // ESC[ ... 48;2;<red>;<green>;<blue> ... m -or- ESC[ ...
