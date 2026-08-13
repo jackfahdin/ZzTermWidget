@@ -1476,6 +1476,7 @@ void TerminalDisplay::updateImage() {
     dirtyRegion |= _inputMethodData.previousPreeditRect;
 
     // update the parts of the display which have changed
+    _lastDirtyRegion = dirtyRegion; // 测试/benchmark 观测钩子：记录本次帧脏区
     update(dirtyRegion);
 
     if (_hasBlinker && !_blinkTimer->isActive())

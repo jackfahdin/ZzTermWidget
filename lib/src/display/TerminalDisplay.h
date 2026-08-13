@@ -423,6 +423,14 @@ public:
     bool isTextBatchingEnabled() const { return _textBatchingEnabled; }
 
     /**
+     * @brief 查询上一次 updateImage() 计算并提交给 QWidget::update() 的脏区。
+     * @return 上次帧的脏区；updateImage() 未执行或被同步输出攒帧拦截时为上一次的值。
+     * @note 测试与 benchmark 计量钩子（镜像 _drawTextTestFlag 的内部观测点惯例）；
+     *       内部接口，不进公共头 qtermwidget.h。
+     */
+    QRegion lastDirtyRegion() const { return _lastDirtyRegion; }
+
+    /**
      * Sets the terminal screen section which is displayed in this widget.
      * When updateImage() is called, the display fetches the latest character image from the
      * the associated terminal screen window.
@@ -928,6 +936,9 @@ private:
 
     /** @brief 上一次 updateImage() 时的视图顶行（绝对行号）；sixel 含图行强制置脏用。 */
     int _imageViewTopLine = 0;
+
+    /** @brief 上一次 updateImage() 提交的脏区；lastDirtyRegion() 测试钩子用。 */
+    QRegion _lastDirtyRegion;
 
     ColorEntry _colorTable[TABLE_COLORS];
 
