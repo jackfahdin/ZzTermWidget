@@ -822,6 +822,15 @@ private:
     void drawCharacters(QPainter& painter, const QRect& rect,  const std::u32string& text,
                                            const Character* style, bool invertCharacterColor,
                                            bool tooWide = false);
+    /**
+     * @brief 手绘样式下划线（SGR 4:2..4:5 双/波浪/点/虚，或带独立下划线色的单线）。
+     * @param painter 目标画笔（字体与世界变换已按片段设置，DECDH 缩放同样生效）。
+     * @param rect 片段绘制区域（宽字符片段跨格连续）。
+     * @param style 片段首格样式（rendition 位 11-13 + underlineColor）。
+     * @param fallbackColor underlineColor 为"跟随前景"时使用的颜色（片段实际文本色）。
+     */
+    void drawStyledUnderline(QPainter &painter, const QRect &rect, const Character *style,
+                             const QColor &fallbackColor);
     // draws a string of line graphics
     void drawLineCharString(QPainter& painter, int x, int y,
                             const std::u32string& str, const Character* attributes) const;

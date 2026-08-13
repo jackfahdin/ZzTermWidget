@@ -39,6 +39,7 @@
 #include <QMimeData>
 #include <QMovie>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPixmap>
 #include <QRegularExpression>
 #include <QStyle>
@@ -942,8 +943,12 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
     // setup bold and underline
     bool useBold =
             ((style->rendition & RE_BOLD) && _boldIntense) || font().bold();
-    const bool useUnderline =
-            style->rendition & RE_UNDERLINE || font().underline();
+    // 花样下划线（非单线样式）或独立下划线色走手绘路径：关闭字体下划线，
+    // 文本绘制后在函数尾部按样式手绘；默认单线无独立色保持 QFont underline 现状
+    const bool styledUnderline = (style->rendition & RE_UNDERLINE) != 0
+            && (style->underlineStyle() != UNDERLINE_SINGLE || style->hasCustomUnderlineColor());
+    const bool useUnderline = !styledUnderline
+            && (style->rendition & RE_UNDERLINE || font().underline());
     const bool useItalic = style->rendition & RE_ITALIC || font().italic();
     const bool useStrikeOut =
             style->rendition & RE_STRIKEOUT || font().strikeOut();
@@ -1087,6 +1092,84 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
             }
         }
     }
+
+    // 手绘样式下划线：blink/conceal 已在函数头部提前返回，此处无需再判；
+    // color 为上方解析的片段实际文本色（含光标反色），作 DEFAULT 下划线色的回落
+    if (styledUnderline)
+        drawStyledUnderline(painter, rect, style, color);
+}
+
+void TerminalDisplay::drawStyledUnderline(QPainter &painter, const QRect &rect,
+                                          const Character *style,
+                                          const QColor &fallbackColor) {
+    const QFontMetrics fm = painter.fontMetrics();
+    // 几何与字体下划线同源：基线与文本绘制（rect.y()+_fontAscent+_lineSpacing）一致
+    const qreal y0 = rect.y() + _fontAscent + _lineSpacing + fm.underlinePos();
+    const qreal lineWidth = qMax(1, fm.lineWidth()); // 下限 1px
+    const qreal left = rect.left();
+    const qreal right = rect.right();
+    // DEFAULT 下划线色回落片段实际文本色（含光标反色/选区交换后的颜色）
+    const QColor lineColor = style->hasCustomUnderlineColor()
+            ? style->underlineColor.color(_colorTable)
+            : fallbackColor;
+
+    painter.save();
+    QPen pen(lineColor, lineWidth);
+    pen.setCapStyle(Qt::FlatCap);
+    switch (style->underlineStyle()) {
+    case UNDERLINE_DOUBLE: {
+        // 双线：第二条线置于首线下方，线间距 = 线宽（下限 1px）
+        painter.setPen(pen);
+        const qreal y2 = y0 + lineWidth + qMax<qreal>(1.0, lineWidth);
+        painter.drawLine(QPointF(left, y0), QPointF(right, y0));
+        painter.drawLine(QPointF(left, y2), QPointF(right, y2));
+        break;
+    }
+    case UNDERLINE_CURLY: {
+        /**
+         * 波浪线：正弦波用逐半波二次贝塞尔段近似（quadTo 控制点取 ±2A 时波峰恰为 A）。
+         * 波形参数（随字体度量，不设配置项）：
+         *   振幅  A  = max(1.5px, fm.underlinePos() / 2)
+         *   半波长 hλ = max(3px, fm.horizontalAdvance('~') / 4)
+         * 起始相位向上（首半波波峰在 y0-A），末端截断到片段右缘。
+         * @note 振幅下限 1.5px 的实测依据：offscreen 等宽字体（monospace）underlinePos=0，
+         *       A 退化为 1px 时抗锯齿把波谷像素混色到检出阈值以下，波浪与单线不可区分；
+         *       1.5px 使波谷笔画中心落到下一像素行，覆盖率足够。
+         */
+        const qreal amplitude = qMax<qreal>(1.5, fm.underlinePos() / 2.0);
+        const qreal halfWave = qMax<qreal>(3.0, fm.horizontalAdvance(QLatin1Char('~')) / 4.0);
+        painter.setRenderHint(QPainter::Antialiasing, true); // 仅波浪开抗锯齿
+        // 抗锯齿端盖会向片段左右边缘外渗出半个像素（首列在内容区左缘时超出脏区跨度
+        // ±1 的覆盖，增量重放与全量渲染会差 1px），故把波浪裁剪在片段 rect 内
+        painter.setClipRect(rect, Qt::IntersectClip);
+        painter.setPen(pen);
+        QPainterPath path;
+        path.moveTo(left, y0);
+        bool up = true;
+        for (qreal x = left; x < right; x += halfWave, up = !up) {
+            const qreal xEnd = qMin(x + halfWave, right);
+            path.quadTo(x + (xEnd - x) / 2.0, up ? y0 - 2 * amplitude : y0 + 2 * amplitude,
+                        xEnd, y0);
+        }
+        painter.drawPath(path);
+        break;
+    }
+    case UNDERLINE_DOTTED:
+        pen.setStyle(Qt::DotLine);
+        painter.setPen(pen);
+        painter.drawLine(QPointF(left, y0), QPointF(right, y0));
+        break;
+    case UNDERLINE_DASHED:
+        pen.setStyle(Qt::DashLine);
+        painter.setPen(pen);
+        painter.drawLine(QPointF(left, y0), QPointF(right, y0));
+        break;
+    default: // UNDERLINE_SINGLE + 独立下划线色：手绘单色实线（颜色脱离字体下划线）
+        painter.setPen(pen);
+        painter.drawLine(QPointF(left, y0), QPointF(right, y0));
+        break;
+    }
+    painter.restore();
 }
 
 void TerminalDisplay::drawTextFragment(QPainter &painter, const QRect &rect,
@@ -2304,6 +2387,7 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             bool smallWidth = _fixedFont && c && charWidth < _fontWidth;
             CharacterColor currentForeground = _image[loc(x, y)].foregroundColor;
             CharacterColor currentBackground = _image[loc(x, y)].backgroundColor;
+            CharacterColor currentUnderlineColor = _image[loc(x, y)].underlineColor; // 下划线色不同不得并入同一片段
             quint16 currentRendition = _image[loc(x, y)].rendition;
 
             char32_t nxtC = 0;
@@ -2312,6 +2396,7 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             while (x + len <= rlx &&
                         _image[loc(x + len, y)].foregroundColor == currentForeground &&
                         _image[loc(x + len, y)].backgroundColor == currentBackground &&
+                        _image[loc(x + len, y)].underlineColor == currentUnderlineColor &&
                         _image[loc(x + len, y)].rendition == currentRendition &&
                         (nxtDoubleWidth = (_image[qMin(loc(x+len,y)+1,_imageSize)].character == 0)) == doubleWidth &&
                         !smallWidth &&
@@ -2458,6 +2543,7 @@ void TerminalDisplay::drawContentsLegacy(QPainter &paint, const QRect &rect) {
             bool smallWidth = _fixedFont && c && charWidth < _fontWidth;
             CharacterColor currentForeground = _image[loc(x, y)].foregroundColor;
             CharacterColor currentBackground = _image[loc(x, y)].backgroundColor;
+            CharacterColor currentUnderlineColor = _image[loc(x, y)].underlineColor; // 下划线色不同不得并入同一片段
             quint16 currentRendition = _image[loc(x, y)].rendition;
 
             char32_t nxtC = 0;
@@ -2466,6 +2552,7 @@ void TerminalDisplay::drawContentsLegacy(QPainter &paint, const QRect &rect) {
             while (x + len <= rlx &&
                         _image[loc(x + len, y)].foregroundColor == currentForeground &&
                         _image[loc(x + len, y)].backgroundColor == currentBackground &&
+                        _image[loc(x + len, y)].underlineColor == currentUnderlineColor &&
                         _image[loc(x + len, y)].rendition == currentRendition &&
                         (nxtDoubleWidth = (_image[qMin(loc(x+len,y)+1,_imageSize)].character == 0)) == doubleWidth &&
                         !smallWidth &&

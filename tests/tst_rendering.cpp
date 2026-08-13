@@ -3,6 +3,7 @@
 #include <QFontDatabase>
 #include <QImage>
 #include <QPainter>
+#include <cstring>
 #include "Vt102Emulation.h"
 #include "ScreenWindow.h"
 #include "History.h"
@@ -29,6 +30,9 @@ private slots:
     void testScrollImageFallback();
     void testScrollSelectionFallback();
     void testScrollOptimizationSwitchAB();
+    void testStyledUnderlinePixelEquivalence();
+    void testStyledUnderlinePixels();
+    void testStyledUnderlineDirtyRegion();
 };
 
 /**
@@ -652,6 +656,149 @@ void TestRendering::testScrollOptimizationSwitchAB()
     // 快路径在 A 上逐帧接管、在 B 上被开关关闭（无可观测行为差异，以命中计数为证据）
     QCOMPARE(displayA.scrollFastPathFrameCount(), 3);
     QCOMPARE(displayB.scrollFastPathFrameCount(), 0);
+}
+
+/**
+ * @brief 花样下划线与独立下划线色：批次聚合路径与 Legacy 逐片段路径逐像素相等。
+ * @note 覆盖全部手绘样式（双/波浪/点/虚）、58 分号/冒号、59 复位与宽字符混排。
+ */
+void TestRendering::testStyledUnderlinePixelEquivalence()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initRenderEnv(emu, win, display);
+    QByteArray s;
+    s += "\033[H";
+    s += "\033[4:1msingle styled\033[0m\r\n";
+    s += "\033[4:2mdouble underline\033[0m\r\n";
+    s += "\033[4:3mcurly underline\033[0m\r\n";
+    s += "\033[4:4mdotted underline\033[0m\r\n";
+    s += "\033[4:5mdashed underline\033[0m\r\n";
+    s += "\033[4m\033[58;5;196m256color underline\033[0m\r\n";
+    s += "\033[4:3m\033[58;2;0;255;0mrgb curly\033[0m\r\n";
+    s += "\033[4:2m\033[58:2::255:128:0mcolon rgb double\033[0m\r\n";
+    s += "\033[4:3m\xE4\xB8\xAD\xE6\x96\x87 wide \xE4\xB8\xAD\xE6\x96\x87\033[0m\r\n"; // 中文 wide 中文
+    s += "\033[58;5;42m\033[4mcolored then \033[59m\033[4mreset\033[0m\r\n";
+    emu.receiveData(s.constData(), int(s.size()));
+
+    const QImage batched = renderDisplay(display, true);
+    const QImage legacy = renderDisplay(display, false);
+    if (batched != legacy) { // 排障辅助：落盘人工比对
+        batched.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-ul-batched.png")));
+        legacy.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-ul-legacy.png")));
+    }
+    QCOMPARE(batched, legacy);
+}
+
+/**
+ * @brief 手绘下划线像素证据：独立绿色下划线可被逐行检出；波浪线纵向覆盖行数多于单线
+ *        且波谷低于单线最底行；双线存在中间无墨间隙。
+ * @note 用 58;2;0;255;0 纯绿独立色 + 红色文本，颜色隔离文本抗锯齿像素；
+ *       波浪线开抗锯齿，边缘像素为混合色，故用"偏绿"阈值而非精确等值。
+ */
+void TestRendering::testStyledUnderlinePixels()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initRenderEnv(emu, win, display);
+    QByteArray s;
+    s += "\033[H";
+    s += "\033[31m\033[4:1m\033[58;2;0;255;0mAAAA\033[0m\r\n"; // 行 0：红字 + 绿色单线
+    s += "\033[4:3m\033[58;2;0;255;0mAAAA\033[0m\r\n";          // 行 1：绿色波浪
+    s += "\033[4:2m\033[58;2;0;255;0mAAAA\033[0m\r\n";          // 行 2：绿色双线
+    emu.receiveData(s.constData(), int(s.size()));
+    pumpFrame(win);
+    pumpFrame(win);
+    renderFull(display); // warmup：吃掉 _drawTextTestFlag 一次性度量
+    const QImage img = renderFull(display);
+
+    const int fw = display.fontWidth();
+    const int fh = display.fontHeight();
+    const int top0 = display.contentsRect().top() + display.margin();
+    const int left0 = display.contentsRect().left() + display.margin();
+    const auto greenish = [](QRgb px) {
+        return qGreen(px) > 200 && qRed(px) < 80 && qBlue(px) < 80;
+    };
+    // 统计第 row 行、行内 y 偏移 dy 处、前 4 格宽内的绿色像素数
+    const auto greenCountAt = [&](int row, int dy) {
+        int n = 0;
+        const int y = top0 + row * fh + dy;
+        for (int x = left0; x < left0 + 4 * fw; ++x)
+            if (greenish(img.pixel(x, y)))
+                ++n;
+        return n;
+    };
+    const auto inkDys = [&](int row) {
+        QList<int> dys;
+        for (int dy = fh / 2; dy < fh; ++dy)
+            if (greenCountAt(row, dy) > 0)
+                dys.append(dy);
+        return dys;
+    };
+
+    // 单线：绿色像素集中在 1~2 条相邻水平线上
+    const QList<int> single = inkDys(0);
+    QVERIFY2(single.size() >= 1 && single.size() <= 2,
+             qPrintable(QStringLiteral("单线下划线墨行数 %1 异常").arg(single.size())));
+
+    // 波浪：振幅使墨行多于单线，且波谷有像素低于单线最底行
+    const QList<int> curly = inkDys(1);
+    QVERIFY2(curly.size() > single.size(),
+             qPrintable(QStringLiteral("波浪墨行数 %1 未多于单线 %2")
+                        .arg(curly.size()).arg(single.size())));
+    QVERIFY2(curly.last() > single.last(),
+             qPrintable(QStringLiteral("波浪波谷 %1 未低于单线底 %2")
+                        .arg(curly.last()).arg(single.last())));
+
+    // 双线：两条墨带之间存在无墨间隙行
+    const QList<int> dbl = inkDys(2);
+    QVERIFY(dbl.size() >= 2);
+    bool hasGap = false;
+    for (int dy = dbl.first() + 1; dy < dbl.last(); ++dy)
+        if (!dbl.contains(dy))
+            hasGap = true;
+    QVERIFY2(hasGap, "双线下划线两条墨带间无间隙");
+}
+
+/**
+ * @brief 样式/下划线色变更格必脏：仅改下划线样式或仅改 underlineColor 重写同文本，
+ *        该行脏区非空且增量重放与全量渲染逐像素相等。
+ * @note 后者是 operator!=/equalsFormat 纳入 underlineColor 的端到端证据（防脏区漏检）。
+ */
+void TestRendering::testStyledUnderlineDirtyRegion()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initRenderEnv(emu, win, display);
+    emu.receiveData("\033[1;1HAB", 8);
+    pumpFrame(win);
+    pumpFrame(win);
+    renderFull(display); // warmup
+    const QImage base = renderFull(display);
+
+    const int fh = display.fontHeight();
+    const QRect band(0, display.contentsRect().top() + display.margin(), display.width(), fh);
+
+    // 仅改下划线样式（A B 文本不变）：样式位变化 → 必脏
+    const char *edit1 = "\033[1;1H\033[4:3mAB";
+    emu.receiveData(edit1, int(std::strlen(edit1)));
+    pumpFrame(win);
+    QVERIFY2(display.lastDirtyRegion().intersects(band), "下划线样式变更未置脏");
+    const QImage inc1 = replayDirtyRegion(display, base);
+    const QImage full1 = renderFull(display);
+    QCOMPARE(inc1, full1);
+
+    // 仅改下划线色（文本与样式位均不变）：underlineColor 参与相等性 → 必脏
+    const char *edit2 = "\033[1;1H\033[4m\033[58;5;196mAB";
+    emu.receiveData(edit2, int(std::strlen(edit2)));
+    pumpFrame(win);
+    QVERIFY2(display.lastDirtyRegion().intersects(band), "下划线色变更未置脏（equalsFormat 漏检）");
+    const QImage inc2 = replayDirtyRegion(display, full1);
+    const QImage full2 = renderFull(display);
+    QCOMPARE(inc2, full2);
 }
 
 QTEST_MAIN(TestRendering)
