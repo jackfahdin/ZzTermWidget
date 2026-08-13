@@ -763,9 +763,11 @@ void TestRendering::testStyledUnderlinePixels()
 }
 
 /**
- * @brief 样式/下划线色变更格必脏：仅改下划线样式或仅改 underlineColor 重写同文本，
- *        该行脏区非空且增量重放与全量渲染逐像素相等。
- * @note 后者是 operator!=/equalsFormat 纳入 underlineColor 的端到端证据（防脏区漏检）。
+ * @brief 样式/下划线色变更格必脏：基线带 4:1 单线，先纯改样式位（4:1→4:3），
+ *        再保持 rendition 不变纯改 underlineColor（重述 4:3 + 58），
+ *        两次该行脏区均非空且增量重放与全量渲染逐像素相等。
+ * @note 两例分别隔离样式位与 underlineColor 两个维度：前者是样式位参与 rendition
+ *       相等性的证据，后者是 operator!= 纳入 underlineColor 的端到端证据（防脏区漏检）。
  */
 void TestRendering::testStyledUnderlineDirtyRegion()
 {
@@ -773,7 +775,10 @@ void TestRendering::testStyledUnderlineDirtyRegion()
     ScreenWindow *win = nullptr;
     TerminalDisplay display;
     initRenderEnv(emu, win, display);
-    emu.receiveData("\033[1;1HAB", 8);
+    // 基线帧即带 4:1 单线下划线（RE_UNDERLINE 汇总位已置位），
+    // 使 edit1 成为纯样式位变更（汇总位与文本均不变）
+    const char *setup = "\033[1;1H\033[4:1mAB";
+    emu.receiveData(setup, int(std::strlen(setup)));
     pumpFrame(win);
     pumpFrame(win);
     renderFull(display); // warmup
@@ -782,7 +787,7 @@ void TestRendering::testStyledUnderlineDirtyRegion()
     const int fh = display.fontHeight();
     const QRect band(0, display.contentsRect().top() + display.margin(), display.width(), fh);
 
-    // 仅改下划线样式（A B 文本不变）：样式位变化 → 必脏
+    // 仅改下划线样式（4:1 → 4:3，文本与 RE_UNDERLINE 汇总位均不变）：样式位变化 → 必脏
     const char *edit1 = "\033[1;1H\033[4:3mAB";
     emu.receiveData(edit1, int(std::strlen(edit1)));
     pumpFrame(win);
@@ -791,8 +796,10 @@ void TestRendering::testStyledUnderlineDirtyRegion()
     const QImage full1 = renderFull(display);
     QCOMPARE(inc1, full1);
 
-    // 仅改下划线色（文本与样式位均不变）：underlineColor 参与相等性 → 必脏
-    const char *edit2 = "\033[1;1H\033[4m\033[58;5;196mAB";
+    // 仅改下划线色（重述 4:3 保持 rendition 与上一帧完全一致，文本与样式位均不变）：
+    // underlineColor 参与相等性 → 必脏。若用 \033[4m 会把样式位重置为单线，
+    // rendition 同时变化，即使 equalsFormat 漏检 underlineColor 也会置脏，证据无效
+    const char *edit2 = "\033[1;1H\033[4:3m\033[58;5;196mAB";
     emu.receiveData(edit2, int(std::strlen(edit2)));
     pumpFrame(win);
     QVERIFY2(display.lastDirtyRegion().intersects(band), "下划线色变更未置脏（equalsFormat 漏检）");
