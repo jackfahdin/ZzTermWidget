@@ -1,4 +1,5 @@
 #include <QtTest>
+#include <QImage>
 #include <cstring>
 #include "Vt102Emulation.h"
 #include "ScreenWindow.h"
@@ -33,6 +34,12 @@ private slots:
     void testKittyEventTypes();
     void testKittyReleaseIgnoredWhenDisabled();
     void testKittyUnhandledKeyReleaseSwallowed();
+    void testSixelAnchorStoresAndMovesCursor();
+    void testSixelScrollbackKeepsImage();
+    void testSixelClearLineDestroysImage();
+    void testSixelResetClearsImages();
+    void testSixelAlternateScreenIndependent();
+    void testSixelPixelBudgetDrops();
 };
 
 /**
@@ -529,6 +536,127 @@ void TestEmulation::testKittyUnhandledKeyReleaseSwallowed()
     QKeyEvent f5Release = makeKeyEvent(QEvent::KeyRelease, Qt::Key_F5, Qt::NoModifier);
     emu.sendKeyEvent(&f5Release, false);
     QCOMPARE(sent, QByteArray()); // F5 释放同样吞掉
+}
+
+/**
+ * @brief 构造纯色 ARGB32 测试图。
+ */
+static QImage solidImage(const QSize &size, const QColor &color)
+{
+    QImage img(size, QImage::Format_ARGB32);
+    img.fill(color);
+    return img;
+}
+
+/**
+ * @brief 锚定：行级引用逐行放置（含行偏移），文本光标移到图像最后一行之下。
+ */
+void TestEmulation::testSixelAnchorStoresAndMovesCursor()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setCellPixelSize(8, 16);
+    Screen *scr = emu.createWindow()->screen();
+    scr->anchorImage(solidImage({16, 33}, Qt::red), true); // 33px 高 / 16px 行高 → 3 网格行
+    const auto row0 = scr->imagePlacements(0);
+    QCOMPARE(row0.size(), 1);
+    QCOMPARE(row0[0].startCol, 0);
+    QCOMPARE(row0[0].rowOffset, 0);
+    QCOMPARE(scr->imagePlacements(1)[0].rowOffset, 1);
+    QCOMPARE(scr->imagePlacements(2)[0].rowOffset, 2);
+    QVERIFY(scr->imagePlacements(3).isEmpty());
+    QCOMPARE(scr->getCursorY(), 3); // 光标在图最后一行之下
+    const SixelImage *stored = scr->sixelImage(row0[0].imageId);
+    QVERIFY(stored != nullptr);
+    QCOMPARE(stored->image.size(), QSize(16, 33));
+    QVERIFY(stored->transparentBackground);
+    QVERIFY(scr->graphicsDirty()); // 通知显示层补刷
+}
+
+/**
+ * @brief 锚定触底触发滚动：图像引用随行走入历史，绝对行坐标下保持完整。
+ */
+void TestEmulation::testSixelScrollbackKeepsImage()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 3, 80);
+    emu.setCellPixelSize(8, 16);
+    emu.setHistory(HistoryTypeBuffer(100));
+    Screen *scr = emu.createWindow()->screen();
+    scr->anchorImage(solidImage({16, 48}, Qt::red), false); // 恰 3 网格行，第三次 index() 触底滚动
+    QVERIFY(scr->getHistLines() >= 1);
+    QCOMPARE(scr->imagePlacements(0).size(), 1); // 绝对行 0 = 最早历史行
+    QCOMPARE(scr->imagePlacements(0)[0].rowOffset, 0);
+    QCOMPARE(scr->imagePlacements(1)[0].rowOffset, 1);
+    QCOMPARE(scr->imagePlacements(2)[0].rowOffset, 2);
+    QCOMPARE(scr->getCursorY(), 2); // 光标停留末行
+}
+
+/**
+ * @brief 清行（CSI 2 K）销毁该行图像引用，计数归零后像素数据回收。
+ */
+void TestEmulation::testSixelClearLineDestroysImage()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setCellPixelSize(8, 16);
+    Screen *scr = emu.createWindow()->screen();
+    scr->anchorImage(solidImage({16, 16}, Qt::red), false); // 1 网格行
+    const quint32 id = scr->imagePlacements(0)[0].imageId;
+    QVERIFY(scr->sixelImage(id) != nullptr);
+    emu.receiveData("\033[H\033[2K", 7); // 回第 0 行清整行
+    QVERIFY(scr->imagePlacements(0).isEmpty());
+    QVERIFY(scr->sixelImage(id) == nullptr);
+}
+
+/**
+ * @brief RIS（ESC c）复位：全部图像与引用清空。
+ */
+void TestEmulation::testSixelResetClearsImages()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setCellPixelSize(8, 16);
+    Screen *scr = emu.createWindow()->screen();
+    scr->anchorImage(solidImage({16, 16}, Qt::red), false);
+    emu.receiveData("\033c", 2);
+    QVERIFY(scr->imagePlacements(0).isEmpty());
+}
+
+/**
+ * @brief 主/备屏图像各自独立：切备选屏后无图，切回主屏图像仍在。
+ */
+void TestEmulation::testSixelAlternateScreenIndependent()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setCellPixelSize(8, 16);
+    Screen *mainScr = emu.createWindow()->screen();
+    mainScr->anchorImage(solidImage({16, 16}, Qt::red), false);
+    emu.receiveData("\033[?1049h", 8); // 切备选屏
+    Screen *altScr = emu.createWindow()->screen();
+    QVERIFY(altScr->imagePlacements(0).isEmpty());
+    emu.receiveData("\033[?1049l", 8); // 切回主屏
+    QCOMPARE(mainScr->imagePlacements(0).size(), 1);
+}
+
+/**
+ * @brief 累计像素预算 256MB：4 张 4096x4096（各 64MB）共存，第 5 张超限静默丢弃。
+ */
+void TestEmulation::testSixelPixelBudgetDrops()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setCellPixelSize(8, 4096); // 每张 4096px 高恰占 1 网格行，4 张同屏存活
+    Screen *scr = emu.createWindow()->screen();
+    const QImage big = solidImage({4096, 4096}, Qt::red); // 隐式共享，实际内存仅一份
+    for (int i = 0; i < 4; i++)
+        scr->anchorImage(big, false);
+    for (int i = 0; i < 4; i++)
+        QCOMPARE(scr->imagePlacements(i).size(), 1);
+    scr->anchorImage(big, false); // 第 5 张：超 256MB 预算丢弃，光标不下移
+    QVERIFY(scr->imagePlacements(4).isEmpty());
+    QCOMPARE(scr->getCursorY(), 4);
 }
 
 QTEST_GUILESS_MAIN(TestEmulation)

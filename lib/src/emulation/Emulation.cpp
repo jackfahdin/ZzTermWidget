@@ -310,6 +310,12 @@ void Emulation::setImageSize(int lines, int columns) {
     bufferedUpdate();
 }
 
+void Emulation::setCellPixelSize(int width, int height)
+{
+    _screen[0]->setCellPixelSize(width, height);
+    _screen[1]->setCellPixelSize(width, height);
+}
+
 QSize Emulation::imageSize() const {
     return {_currentScreen->getColumns(), _currentScreen->getLines()};
 }

@@ -59,7 +59,8 @@ Screen::Screen(int l, int c)
             selBegin(0), selTopLeft(0), selBottomRight(0), blockSelectionMode(false),
             effectiveForeground(CharacterColor()),
             effectiveBackground(CharacterColor()), effectiveRendition(0),
-            lastPos(-1), _linkLines(new HyperlinkLine[lines + 1]) {
+            lastPos(-1), _linkLines(new HyperlinkLine[lines + 1]),
+            _imageLines(new ImageRefLine[lines + 1]) {
     lineProperties.resize(lines + 1);
     for (int i = 0; i < lines + 1; i++)
             lineProperties[i] = LINE_DEFAULT;
@@ -72,6 +73,7 @@ Screen::Screen(int l, int c)
 Screen::~Screen() {
     delete[] screenLines;
     delete[] _linkLines;
+    delete[] _imageLines;
     delete history;
 }
 
@@ -318,6 +320,15 @@ void Screen::resizeImage(int new_lines, int new_columns) {
     delete[] _linkLines;
     _linkLines = newLinkLines;
 
+    // Sixel：图像引用表数组随屏幕尺寸重建；收缩时被裁行的引用销毁（先 move 再 delete 旧数组）
+    ImageRefLine *newImageLines = new ImageRefLine[new_lines + 1];
+    for (int i = 0; i < qMin(lines, new_lines + 1); i++)
+        newImageLines[i] = std::move(_imageLines[i]);
+    for (int i = qMin(lines, new_lines + 1); i < lines + 1; i++)
+        releaseImageLine(_imageLines[i]); // 收缩时被裁行的引用销毁
+    delete[] _imageLines;
+    _imageLines = newImageLines;
+
     delete[] screenLines;
     screenLines = newScreenLines;
 
@@ -525,6 +536,7 @@ void Screen::reset(bool clearScreen) {
     saveCursor();
 
     clearAllHyperlinks(); // OSC 8：复位时丢弃全部链接段表与 URI 映射
+    clearAllImages(); // Sixel：复位时丢弃全部图像与引用
 
     if (clearScreen)
         clear();
@@ -951,6 +963,7 @@ void Screen::clearImage(int loca, int loce, char c) {
     for (int y = topLine; y <= bottomLine; y++) {
         lineProperties[y] = 0;
         releaseHyperlinkLine(_linkLines[y]); // 清行连带清除链接段表
+        releaseImageLine(_imageLines[y]); // 清行连带销毁图像引用
 
         int endCol = (y == bottomLine) ? loce % columns : columns - 1;
         int startCol = (y == topLine) ? loca % columns : 0;
@@ -983,22 +996,28 @@ void Screen::moveImage(int dest, int sourceBegin, int sourceEnd) {
     if (dest < sourceBegin) {
         for (int i = 0; i <= lines; i++) {
             releaseHyperlinkLine(_linkLines[(dest / columns) + i]); // 目标行被覆盖，旧段表回收
+            releaseImageLine(_imageLines[(dest / columns) + i]); // 目标行被覆盖，旧引用销毁
             screenLines[(dest / columns) + i] =
                     screenLines[(sourceBegin / columns) + i];
             lineProperties[(dest / columns) + i] =
                     lineProperties[(sourceBegin / columns) + i];
             _linkLines[(dest / columns) + i] =
                     std::move(_linkLines[(sourceBegin / columns) + i]); // 段表随行走（move 防止引用计数双降）
+            _imageLines[(dest / columns) + i] =
+                    std::move(_imageLines[(sourceBegin / columns) + i]); // 引用随行走（move 防止引用计数双降）
         }
     } else {
         for (int i = lines; i >= 0; i--) {
             releaseHyperlinkLine(_linkLines[(dest / columns) + i]); // 目标行被覆盖，旧段表回收
+            releaseImageLine(_imageLines[(dest / columns) + i]); // 目标行被覆盖，旧引用销毁
             screenLines[(dest / columns) + i] =
                     screenLines[(sourceBegin / columns) + i];
             lineProperties[(dest / columns) + i] =
                     lineProperties[(sourceBegin / columns) + i];
             _linkLines[(dest / columns) + i] =
                     std::move(_linkLines[(sourceBegin / columns) + i]); // 段表随行走（move 防止引用计数双降）
+            _imageLines[(dest / columns) + i] =
+                    std::move(_imageLines[(sourceBegin / columns) + i]); // 引用随行走（move 防止引用计数双降）
         }
     }
 
@@ -1360,6 +1379,18 @@ void Screen::addHistLine() {
         }
         _linkLines[0].clear();
 
+        // Sixel：图像引用随行进入 scrollback；历史满丢弃最旧行时同步销毁其引用
+        if (newHistLines > oldHistLines) {
+            _historyImages.push_back(std::move(_imageLines[0]));
+        } else if (oldHistLines > 0) {
+            releaseImageLine(_historyImages.front());
+            _historyImages.pop_front();
+            _historyImages.push_back(std::move(_imageLines[0]));
+        } else {
+            releaseImageLine(_imageLines[0]); // 防御：历史容量为零（行无法入库）时直接销毁
+        }
+        _imageLines[0].clear();
+
         bool beginIsTL = (selBegin == selTopLeft);
 
         // If the history is full, increment the count
@@ -1491,6 +1522,85 @@ void Screen::clearAllHyperlinks() {
     _currentHyperlinkId = 0;
 }
 
+void Screen::setCellPixelSize(int width, int height)
+{
+    _cellPixelWidth = width;
+    _cellPixelHeight = height;
+}
+
+void Screen::anchorImage(const QImage &image, bool transparentBackground)
+{
+    if (image.isNull())
+        return;
+    const qint64 bytes = qint64(image.width()) * image.height() * 4;
+    if (_imageBytes + bytes > MAX_IMAGE_BYTES)
+        return; // 超累计像素预算：整张静默丢弃（调用方已吞到 ST），光标不动
+    const int cellH = _cellPixelHeight > 0 ? _cellPixelHeight : DEFAULT_CELL_PIXEL_HEIGHT;
+    const int gridRows = qMax(1, (image.height() + cellH - 1) / cellH);
+
+    const quint32 id = _nextImageId++;
+    _sixelImages.insert(id, SixelImage {image, transparentBackground});
+    _imageRefs.insert(id, 0);
+    _imageBytes += bytes;
+    _graphicsDirty = true;
+
+    // 逐行放置引用并 index() 下移光标：触底时 index() 触发滚动，已放置引用经
+    // moveImage/addHistLine 挂钩随行走——图像随行滚动、滚入历史保留
+    for (int i = 0; i < gridRows; i++) {
+        ImageRefLine &row = _imageLines[cuY];
+        row.append({cuX, id, i});
+        _imageRefs[id]++;
+        index(); // 不改 cuX：文本光标仅垂直移到图像最后一行之下
+    }
+}
+
+QVector<ImagePlacement> Screen::imagePlacements(int absoluteLine) const
+{
+    const int histLines = history->getLines();
+    if (absoluteLine < 0 || absoluteLine >= histLines + lines)
+        return {};
+    if (absoluteLine < histLines) {
+        if (absoluteLine < static_cast<int>(_historyImages.size()))
+            return _historyImages[absoluteLine];
+        return {};
+    }
+    return _imageLines[absoluteLine - histLines];
+}
+
+const SixelImage *Screen::sixelImage(quint32 imageId) const
+{
+    const auto it = _sixelImages.constFind(imageId);
+    return it == _sixelImages.constEnd() ? nullptr : &it.value();
+}
+
+void Screen::releaseImageLine(ImageRefLine &row)
+{
+    for (const ImagePlacement &p : row) {
+        auto it = _imageRefs.find(p.imageId);
+        if (it != _imageRefs.end() && --it.value() == 0) {
+            _imageRefs.erase(it);
+            const auto imgIt = _sixelImages.find(p.imageId);
+            if (imgIt != _sixelImages.end()) {
+                _imageBytes -= qint64(imgIt->image.width()) * imgIt->image.height() * 4;
+                _sixelImages.erase(imgIt);
+            }
+        }
+    }
+    row.clear();
+}
+
+void Screen::clearAllImages()
+{
+    // 整体丢弃（reset 路径），无需逐个维护引用计数
+    for (int i = 0; i < lines + 1; i++)
+        _imageLines[i].clear();
+    _historyImages.clear();
+    _sixelImages.clear();
+    _imageRefs.clear();
+    _imageBytes = 0;
+    _graphicsDirty = true; // 图像消失同样需要补刷
+}
+
 int Screen::getHistLines() const { return history->getLines(); }
 
 void Screen::setScroll(const HistoryType &t, bool copyPreviousScroll) {
@@ -1506,6 +1616,10 @@ void Screen::setScroll(const HistoryType &t, bool copyPreviousScroll) {
         for (HyperlinkLine &row : _historyLinks)
             releaseHyperlinkLine(row);
         _historyLinks.clear();
+        // 历史整体废弃（clearHistory）：同步销毁历史图像引用
+        for (ImageRefLine &row : _historyImages)
+            releaseImageLine(row);
+        _historyImages.clear();
     }
 }
 

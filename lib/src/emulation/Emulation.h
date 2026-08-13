@@ -171,6 +171,13 @@ public:
     void clearHistory();
 
     /**
+     * @brief 同步显示层的单元格像素尺寸到主/备屏（sixel 图像锚定时换算占用行数）。
+     * @note 内部接口（非 lib/include 公共 API）；由 QTermWidget 经
+     *       TerminalDisplay::changedFontMetricSignal 接线调用。
+     */
+    void setCellPixelSize(int width, int height);
+
+    /**
      * Copies the output history from @p startLine to @p endLine
      * into @p stream, using @p decoder to convert the terminal
      * characters into text.
