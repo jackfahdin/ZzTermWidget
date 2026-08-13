@@ -2130,16 +2130,19 @@ QRect TerminalDisplay::calculateTextArea(int topLeftX, int topLeftY,
                                             int startColumn, int line,
                                             int length,
                                             const QTransform &textScale) {
-    // NOTE: Only the origin offset should be mapped inversely for double
-    // width/height lines.
-    QPoint origin = textScale.inverted().map(QPoint(_leftMargin + topLeftX, _topMargin + topLeftY));
-    int left =
+    const int left =
             _fixedFont ? _fontWidth * startColumn : textWidth(0, startColumn, line);
-    int top = _fontHeight * line;
-    int width =
+    const int top = _fontHeight * line;
+    const int width =
             _fixedFont ? _fontWidth * length : textWidth(startColumn, length, line);
-    return {origin.x() + left, origin.y() + top, width,
-                    _fontHeight};
+    // 逆映射一致化（DECDH 根治）：行顶 top 并入逆映射点，scale(1,2) 下墨迹落在
+    // 该行自身行带（旧实现只逆映射原点，top 未经逆映射，墨迹落在 2× 行坐标处，
+    // 行矩形脏区盖不住、增量重绘必留残影）。横向 left 保持不逆映射：DECDWL 下
+    // 列 x 本就该经 scale(2,1) 映射到 2× 列像素位置（ESC#3/#4 恒同置双宽位，
+    // 双高双宽组合由同一修正覆盖）。恒等变换下求逆不变，像素输出不受影响。
+    const QPoint origin = textScale.inverted().map(
+            QPoint(_leftMargin + topLeftX, _topMargin + topLeftY + top));
+    return {origin.x() + left, origin.y(), width, _fontHeight};
 }
 
 void TerminalDisplay::drawImagesBelowText(QPainter &paint, const QRect &rect)
@@ -2488,18 +2491,15 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             if (hasTextScale)
                 paint.setWorldTransform(textScale.inverted(), true);
 
-            if (y < _lineProperties.size() - 1) {
-                // double-height _lines are represented by two adjacent _lines
-                // containing the same characters
-                // both _lines will have the LINE_DOUBLEHEIGHT attribute.
-                // If the current line has the LINE_DOUBLEHEIGHT attribute,
-                // we can therefore skip the next line
-                if (_lineProperties[y] & LINE_DOUBLEHEIGHT)
-                    y++;
-            }
-
             x += len - 1;
         }
+
+        // 双高行由相邻两行承载同一文本（两行均带 LINE_DOUBLEHEIGHT），
+        // 本行全部片段绘制完成后跳过下半副本行。该跳过必须位于行内片段（x）
+        // 循环之外：若在循环内执行，行内第二个及后续片段会以 y+1 画线并读到
+        // 下一行的字符（多片段双高行——如行内存在光标/样式分片——会错行绘制）
+        if (y < _lineProperties.size() - 1 && (_lineProperties[y] & LINE_DOUBLEHEIGHT))
+            y++;
     }
 }
 
@@ -2640,18 +2640,15 @@ void TerminalDisplay::drawContentsLegacy(QPainter &paint, const QRect &rect) {
             // reset back to single-width, single-height _lines
             paint.setWorldTransform(textScale.inverted(), true);
 
-            if (y < _lineProperties.size() - 1) {
-                // double-height _lines are represented by two adjacent _lines
-                // containing the same characters
-                // both _lines will have the LINE_DOUBLEHEIGHT attribute.
-                // If the current line has the LINE_DOUBLEHEIGHT attribute,
-                // we can therefore skip the next line
-                if (_lineProperties[y] & LINE_DOUBLEHEIGHT)
-                    y++;
-            }
-
             x += len - 1;
         }
+
+        // 双高行由相邻两行承载同一文本（两行均带 LINE_DOUBLEHEIGHT），
+        // 本行全部片段绘制完成后跳过下半副本行。该跳过必须位于行内片段（x）
+        // 循环之外：若在循环内执行，行内第二个及后续片段会以 y+1 画线并读到
+        // 下一行的字符（多片段双高行——如行内存在光标/样式分片——会错行绘制）
+        if (y < _lineProperties.size() - 1 && (_lineProperties[y] & LINE_DOUBLEHEIGHT))
+            y++;
     }
 }
 

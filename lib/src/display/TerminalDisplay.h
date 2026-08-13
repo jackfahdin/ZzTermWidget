@@ -768,6 +768,7 @@ private:
     // determine the width of this text
     int textWidth(int startColumn, int length, int line) const;
     // determine the area that encloses this series of characters
+    // 双高/双宽行：行顶随原点一并逆映射（横向列偏移不逆映射，DECDWL 语义）
     QRect calculateTextArea(int topLeftX, int topLeftY, int startColumn, int line, int length,
                             const QTransform &textScale);
 

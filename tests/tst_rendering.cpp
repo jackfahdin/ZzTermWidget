@@ -33,6 +33,8 @@ private slots:
     void testStyledUnderlinePixelEquivalence();
     void testStyledUnderlinePixels();
     void testStyledUnderlineDirtyRegion();
+    void testDoubleHeightInkGeometry();
+    void testDoubleHeightPixelEquivalence();
 };
 
 /**
@@ -208,12 +210,11 @@ void TestRendering::testSpanDirtyPixelEquivalence_data()
     QTest::newRow("斜体空格邻居")
             << QByteArray("\033[2;5HAB\033[2;17HCD")
             << QByteArray("\033[2;9H\033[3mITAL\033[0m") << 1 << 0 << true;
-    // 双高行不做逐像素比对：DECDH 片段经 scale(1,2) 世界变换绘制，墨迹落在 2×行坐标处
-    // （calculateTextArea 只对原点逆映射，top 项被放大），任何行矩形脏区都盖不住实际墨迹，
-    // 属于改造前就存在的绘制几何怪癖；此处只验证"双高行整行脏"的行为不退化
+    // 双高行：DECDH 几何根治后墨迹落在该行自身行带（上下两半），两行均整行脏的
+    // 行矩形脏区能完整盖住墨迹，故纳入逐像素比对（轮 7 时因 2× 行坐标怪癖被排除）
     QTest::newRow("双高行整行脏")
             << QByteArray("\033[10;1H\033#3double high line\r\n\033#4double high line\r\n")
-            << QByteArray("\033[10;3HZ") << 9 << -1 << false;
+            << QByteArray("\033[10;3HZ") << 9 << -1 << true;
     QTest::newRow("含图像行")
             << QByteArray("\033[12;1H\033Pq#0;2;100;0;0#0!8~-!8~-!8~\033\\")
             << QByteArray("\033[12;20HIMG") << 11 << 0 << true;
@@ -302,9 +303,9 @@ void TestRendering::testSpanDirtyPixelEquivalence()
 /**
  * @brief 选区高亮帧：selectAll 把选区 rendition 烤进 newimg，逐格比对捕获，
  *        增量重放与全量渲染仍逐像素相等。
- * @note 内容刻意用普通文本+SGR 颜色行：双倍宽/高行的世界变换墨迹会越出行矩形
- *       （详见 testSpanDirtyPixelEquivalence_data 的 DECDH 注释），选区帧只做
- *       像素等价安全网，不混入变换路径怪癖。
+ * @note 内容刻意用普通文本+SGR 颜色行：双倍宽行的世界变换墨迹横向映射到 2× 列像素
+ *       位置、越出格矩形（DECDH 已根治，纵向不再越界），选区帧只做像素等价安全网，
+ *       不混入变换路径怪癖。
  */
 void TestRendering::testSpanDirtySelectionFrame()
 {
@@ -806,6 +807,83 @@ void TestRendering::testStyledUnderlineDirtyRegion()
     const QImage inc2 = replayDirtyRegion(display, full1);
     const QImage full2 = renderFull(display);
     QCOMPARE(inc2, full2);
+}
+
+/**
+ * @brief DECDH 墨迹几何根治：双高行文本墨迹必须落在该行自身两行行带内，
+ *        而非 2× 行坐标处。
+ * @note 回归：旧 calculateTextArea 只逆映射原点，top 项未经逆映射，scale 世界
+ *       变换下行 9 的墨迹落到行 18；任何行矩形脏区都盖不住，增量重绘必留残影。
+ */
+void TestRendering::testDoubleHeightInkGeometry()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initRenderEnv(emu, win, display);
+    emu.setCellPixelSize(display.cellPixelWidth(), display.cellPixelHeight());
+    const QByteArray content =
+            "\033[?25l"                            // 隐藏光标：排除光标块干扰
+            "\033[10;1H\033#3DH\r\n\033#4DH\r\n";  // 行 9/10（0 起）双高行
+    emu.receiveData(content.constData(), int(content.size()));
+    // 双泵就位行属性/视图几何（updateLineProperties 在信号链中先于 updateImage
+    // 执行，单泵拿到的是旧几何下的行属性；同 testSpanDirtyPixelEquivalence）
+    pumpFrame(win);
+    pumpFrame(win);
+    renderFull(display); // warmup：吃掉 _drawTextTestFlag
+    const QImage frame = renderFull(display);
+
+    const int fh = display.fontHeight();
+    const int fw = display.fontWidth();
+    const int top0 = display.contentsRect().top() + display.margin();
+    const int left0 = display.contentsRect().left() + display.margin();
+    // 墨迹计数：以首行（必为空白背景）采样背景色，统计显著偏离背景的像素。
+    // 本机默认配色背景为亮灰、前景为深色，故不能用绝对亮度阈值区分墨迹；
+    // DECDH 恒带双宽，两字符墨迹约 4 格宽，扫 8 格留余量
+    const QColor bg = frame.pixelColor(left0, top0);
+    const auto inkPixels = [&](int rowBegin, int rowEnd) {
+        int n = 0;
+        for (int y = top0 + rowBegin * fh; y < top0 + rowEnd * fh; y++)
+            for (int x = left0; x < left0 + 8 * fw; x++) {
+                const QColor c = frame.pixelColor(x, y);
+                if (qAbs(c.red() - bg.red()) + qAbs(c.green() - bg.green())
+                        + qAbs(c.blue() - bg.blue()) > 100)
+                    n++;
+            }
+        return n;
+    };
+    QVERIFY(inkPixels(9, 11) > 0);   // 墨迹落在双高行自身两行带内
+    QCOMPARE(inkPixels(18, 20), 0);  // 2× 行坐标处无墨迹（根治回归）
+}
+
+/**
+ * @brief 双高行（DECDH 恒带 DECDWL 双宽位，即双高双宽组合）：批次聚合与
+ *        Legacy 逐片段路径逐像素等价。
+ * @note 双路径共享 calculateTextArea，本用例是根治后双高行绘制的常驻安全网；
+ *       双泵就位行属性，保证 _lineProperties 真实携带双高/双宽位（非空转）。
+ */
+void TestRendering::testDoubleHeightPixelEquivalence()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initRenderEnv(emu, win, display);
+    const QByteArray content =
+            "\033[H"
+            "normal row before\r\n"
+            "\033#3double high line\r\n"
+            "\033#4double high line\r\n"
+            "normal row after\r\n";
+    emu.receiveData(content.constData(), int(content.size()));
+    pumpFrame(win);
+    pumpFrame(win); // 行属性/视图几何就位（同 testSpanDirtyPixelEquivalence）
+    const QImage batched = renderDisplay(display, true);
+    const QImage legacy = renderDisplay(display, false);
+    if (batched != legacy) { // 排障辅助：落盘人工比对
+        batched.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-dh-batched.png")));
+        legacy.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-dh-legacy.png")));
+    }
+    QCOMPARE(batched, legacy);
 }
 
 QTEST_MAIN(TestRendering)
