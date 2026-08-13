@@ -32,6 +32,7 @@
 #include <QVector>
 
 #include "Emulation.h"
+#include "KittyGraphicsParser.h"
 #include "Screen.h"
 
 #define MODE_AppScreen       (MODES_SCREEN+0)   // Mode #1
@@ -209,6 +210,38 @@ private:
   void finishSixel();
   /** @brief CAN/SUB/ESC 中止：丢弃累积数据，复位累积状态。 */
   void abortSixel();
+  ///@}
+
+  /**
+   * @name Kitty 图形（APC "ESC _ G ... ESC \"）累积状态
+   * @note 与 sixel DCS 通道同构：base64 图像负载远超 tokenBuffer（MAX_TOKEN_LENGTH），
+   *       检测到 ESC _ G 后切换到独立字节流缓冲，ST 后交 KittyGraphicsParser；
+   *       解析器成员跨 APC 序列存活（m=1 分块续传）。
+   */
+  ///@{
+  /** @brief APC 累积上限（350MB，约对应 256MB 解码像素预算）；超限丢弃整条命令。 */
+  static constexpr qint64 MAX_APC_DATA_LENGTH = 350LL * 1024 * 1024;
+  bool _apcActive = false;     ///< 正在累积 APC 数据段
+  bool _apcOverflow = false;   ///< 数据超上限：吞到 ST 后丢弃
+  bool _apcEscPending = false; ///< 上一字节为 ESC（等待判定 ST 或中止）
+  QByteArray _apcData;         ///< 'G' 之后、ST 之前的原始字节
+  KittyGraphicsParser _kittyParser; ///< 分块重组/解析（跨 APC 序列存活）
+  /** @brief ST 到达：喂解析器；NeedMore 等待续块，Ready/Error 交执行器。 */
+  void finishApc();
+  /** @brief CAN/SUB/ESC 中止：丢弃累积数据与半成品分块，复位状态。 */
+  void abortApc();
+  /** @brief 执行解析完成的 kitty 命令（放置/删除/应答/光标移动/重传语义）。 */
+  void executeKittyCommand(const KittyGraphicsParser::Result &res,
+                           const QByteArray &rawChunk);
+  /**
+   * @brief 经 sendString 回写 kitty 应答到 pty。
+   * @param imageId 图像 id（i= 回显）。
+   * @param placementId 放置 id（includePlacement 时回显 p=）。
+   * @param includePlacement 是否在应答中包含 p=（成功应答且客户端给了 p= 时）。
+   * @param ok true 回 OK；false 回 error（"CODE:message"）。
+   */
+  void sendKittyResponse(quint32 imageId, quint32 placementId, bool includePlacement,
+                         bool ok, const QByteArray &error = {});
   ///@}
   /**
    * @brief 按 kitty 键盘协议编码按键事件。

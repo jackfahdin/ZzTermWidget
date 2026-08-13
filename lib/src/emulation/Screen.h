@@ -515,6 +515,9 @@ public:
     /** @brief d=c/C：删除与当前光标单元格相交的放置；freeData 语义同上。 */
     void kittyDeleteAtCursor(bool freeData);
 
+    /** @brief 淘汰全部无放置引用的 kitty 图像（执行层 ENOSPC 重试路径用）。 */
+    void evictAllUnreferencedKittyImages();
+
     /**
      * @brief 返回绝对行 @p absoluteLine（历史行 + 屏幕行统一编号）上的 kitty 放置引用表。
      * @return 引用表副本；该行无放置或行号越界时为空。

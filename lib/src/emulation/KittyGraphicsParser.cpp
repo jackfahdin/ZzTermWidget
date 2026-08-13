@@ -91,6 +91,9 @@ bool KittyGraphicsParser::decodePayload(qint64 budgetRemaining, Result &out)
         return false;
     };
 
+    if (cmd.medium != 'd')
+        return fail("EINVAL", "unsupported medium"); // 仅支持直接传输；先于尺寸/解码检查
+
     if (cmd.format != 100 && cmd.format != 32 && cmd.format != 24)
         return fail("EINVAL", "decode failed"); // 未知像素格式
 

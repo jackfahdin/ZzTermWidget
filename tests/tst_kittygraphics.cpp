@@ -80,6 +80,18 @@ private slots:
     // 预算淘汰（任务 2 审查补测）
     void testScreenEvictionSkipsPlacedImages();
     void testScreenEvictionLoopExhaustsBudget();
+    // 字节流执行（任务 3）
+    void testTransmitAndDisplayOkResponse();
+    void testResponseEchoesPlacementId();
+    void testQuietSuppressions();
+    void testPlaceUnknownImageEnoent();
+    void testUnsupportedMediumAndAction();
+    void testQueryDoesNotStore();
+    void testCursorMovesAfterPlacement();
+    void testCursorStaysWithC1();
+    void testRetransmitDeletesOldPlacements();
+    void testDeleteViaByteStream();
+    void testBudgetEnforcementAndEviction();
 };
 
 void TestKittyGraphics::testParseKeysAndDefaults()
@@ -490,6 +502,245 @@ void TestKittyGraphics::testScreenEvictionLoopExhaustsBudget()
     QVERIFY(!scr.hasKittyImage(5));
     QVERIFY(!scr.hasKittyImage(4)); // 无引用的图 4 已被淘汰（失败路径也会真淘）
     QVERIFY(scr.hasKittyImage(3));  // 带放置的图 3 始终不动
+}
+
+/** @brief 初始化仿真器并挂接 sendData 抓取（镜像 tst_emulation 的应答测试写法）。 */
+static void initKittyEmu(Vt102Emulation &emu, ScreenWindow *&win, QByteArray &sent)
+{
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setKeyBindings(QString()); // 字节流测试无需键位表，避免查找 default.keytab 资源
+    emu.setImageSize(24, 80);
+    win = emu.createWindow();
+    win->setWindowLines(24);
+    QObject::connect(&emu, &Emulation::sendData,
+                     [&sent](const char *d, int len) { sent.append(d, len); });
+}
+
+void TestKittyGraphics::testTransmitAndDisplayOkResponse()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    QByteArray sent;
+    initKittyEmu(emu, win, sent);
+    const QByteArray seq = kittySeq("a=T,f=32,s=1,v=1,i=42", rgbaPixel(255, 0, 0).toBase64());
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray("\033_Gi=42;OK\033\\"));
+    Screen *scr = win->screen();
+    QVERIFY(scr->hasKittyImage(42));
+    QCOMPARE(scr->kittyRefs(scr->getHistLines()).size(), 1); // 放置锚定在光标行
+}
+
+void TestKittyGraphics::testResponseEchoesPlacementId()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    QByteArray sent;
+    initKittyEmu(emu, win, sent);
+    const QByteArray seq = kittySeq("a=T,f=32,s=1,v=1,i=5,p=3", rgbaPixel(1, 2, 3).toBase64());
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray("\033_Gi=5,p=3;OK\033\\"));
+}
+
+void TestKittyGraphics::testQuietSuppressions()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    QByteArray sent;
+    initKittyEmu(emu, win, sent);
+    // q=1：抑制成功应答
+    QByteArray seq = kittySeq("a=T,f=32,s=1,v=1,i=1,q=1", rgbaPixel(0, 0, 0).toBase64());
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray());
+    QVERIFY(win->screen()->hasKittyImage(1)); // 命令本身仍执行
+    // q=2：抑制失败应答
+    seq = kittySeq("a=p,i=999,q=2");
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray());
+    // q=2 不抑制成功应答
+    seq = kittySeq("a=p,i=1,q=2");
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray("\033_Gi=1;OK\033\\"));
+}
+
+void TestKittyGraphics::testPlaceUnknownImageEnoent()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    QByteArray sent;
+    initKittyEmu(emu, win, sent);
+    const QByteArray seq = kittySeq("a=p,i=777");
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray("\033_Gi=777;ENOENT:no such image\033\\"));
+}
+
+void TestKittyGraphics::testUnsupportedMediumAndAction()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    QByteArray sent;
+    initKittyEmu(emu, win, sent);
+    // t=f（文件介质）不支持：EINVAL
+    QByteArray seq = kittySeq("a=T,t=f,i=1");
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray("\033_Gi=1;EINVAL:unsupported medium\033\\"));
+    sent.clear();
+    // 动画动作 a=f：EINVAL
+    seq = kittySeq("a=f,i=1");
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray("\033_Gi=1;EINVAL:unsupported action\033\\"));
+}
+
+void TestKittyGraphics::testQueryDoesNotStore()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    QByteArray sent;
+    initKittyEmu(emu, win, sent);
+    // a=q：试加载并应答，不存储不替换
+    const QByteArray seq = kittySeq("a=q,f=32,s=1,v=1,i=88", rgbaPixel(7, 7, 7).toBase64());
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray("\033_Gi=88;OK\033\\"));
+    QVERIFY(!win->screen()->hasKittyImage(88));
+    QVERIFY(win->screen()->kittyRefs(win->screen()->getHistLines()).isEmpty());
+}
+
+void TestKittyGraphics::testCursorMovesAfterPlacement()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    QByteArray sent;
+    initKittyEmu(emu, win, sent);
+    // 2x2 单元格图（16x32 像素 / 默认单元格 8x16）：光标右移 2 列、下移 2 行
+    QImage img = solidImage(16, 32, Qt::red);
+    QByteArray png;
+    QBuffer buf(&png);
+    buf.open(QIODevice::WriteOnly);
+    img.save(&buf, "PNG");
+    const QByteArray seq = kittySeq("a=T,f=100,i=3", png.toBase64());
+    emu.receiveData(seq.constData(), int(seq.size()));
+    Screen *scr = win->screen();
+    QCOMPARE(scr->getCursorX(), 2);
+    QCOMPARE(scr->getCursorY(), 2);
+}
+
+void TestKittyGraphics::testCursorStaysWithC1()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    QByteArray sent;
+    initKittyEmu(emu, win, sent);
+    const QByteArray seq = kittySeq("a=T,f=32,s=16,v=32,i=4,C=1",
+                                    QByteArray(16 * 32 * 4, 1).toBase64());
+    emu.receiveData(seq.constData(), int(seq.size()));
+    Screen *scr = win->screen();
+    QCOMPARE(scr->getCursorX(), 0);
+    QCOMPARE(scr->getCursorY(), 0);
+    QCOMPARE(scr->kittyRefs(0).size(), 1);
+}
+
+void TestKittyGraphics::testRetransmitDeletesOldPlacements()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    QByteArray sent;
+    initKittyEmu(emu, win, sent);
+    // 首次 a=T i=9：存储并显示（C=1 固定光标便于断言）
+    QByteArray seq = kittySeq("a=T,f=32,s=1,v=1,i=9,C=1", rgbaPixel(255, 0, 0).toBase64());
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray("\033_Gi=9;OK\033\\"));
+    sent.clear();
+    Screen *scr = win->screen();
+    QCOMPARE(scr->kittyRefs(0).size(), 1);
+    // 同 id 重传：先删旧图及其全部放置，新数据落库但不自动显示
+    seq = kittySeq("a=T,f=32,s=1,v=1,i=9,C=1", rgbaPixel(0, 255, 0).toBase64());
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray("\033_Gi=9;OK\033\\"));
+    QVERIFY(scr->hasKittyImage(9));              // 新数据已落库
+    QCOMPARE(scr->kittyRefs(0).size(), 0);       // 旧放置已删，新图未自动显示
+    // 重新放置后显示
+    seq = kittySeq("a=p,i=9");
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(scr->kittyRefs(0).size(), 1);
+}
+
+void TestKittyGraphics::testDeleteViaByteStream()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    QByteArray sent;
+    initKittyEmu(emu, win, sent);
+    Screen *scr = win->screen();
+    // 两张图各一个放置（C=1 固定光标）
+    for (int id : {31, 32}) {
+        const QByteArray keys = QByteArray("a=T,f=32,s=1,v=1,C=1,i=") + QByteArray::number(id);
+        const QByteArray seq = kittySeq(keys, rgbaPixel(char(id), 0, 0).toBase64());
+        emu.receiveData(seq.constData(), int(seq.size()));
+    }
+    QCOMPARE(scr->kittyRefs(0).size(), 2);
+    sent.clear();
+    // d=i + i=31：删除该图像全部放置（小写，数据保留）
+    QByteArray seq = kittySeq("a=d,d=i,i=31");
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray("\033_Gi=31;OK\033\\"));
+    QCOMPARE(scr->kittyRefs(0).size(), 1);
+    QVERIFY(scr->hasKittyImage(31));
+    sent.clear();
+    // d=a：删除全部可见放置
+    seq = kittySeq("a=d,d=a,i=32");
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(scr->kittyRefs(0).size(), 0);
+    QVERIFY(scr->hasKittyImage(32));
+    sent.clear();
+    // d=A：释放无引用图像数据
+    seq = kittySeq("a=d,d=A,i=32");
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QVERIFY(!scr->hasKittyImage(31));
+    QVERIFY(!scr->hasKittyImage(32));
+    // 不支持的删除变体（d=n）：静默忽略，无应答无破坏
+    sent.clear();
+    seq = kittySeq("a=d,d=n,i=32");
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray());
+}
+
+void TestKittyGraphics::testBudgetEnforcementAndEviction()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    QByteArray sent;
+    initKittyEmu(emu, win, sent);
+    Screen *scr = win->screen();
+    // 用 o=z 压缩全零像素保持线载极小：6000x4000 RGBA = 96MB（ARGB32 同量）
+    const QByteArray zeros(6000 * 4000 * 4, 0);
+    const QByteArray z = zlibStream(zeros).toBase64();
+    const QByteArray headT = QByteArray("a=T,f=32,s=6000,v=4000,o=z,C=1,i=");
+    // 图 1：a=T 落库并放置（96MB，有放置引用，不可淘汰）
+    QByteArray seq = kittySeq(headT + "1", z);
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray("\033_Gi=1;OK\033\\"));
+    sent.clear();
+    // 图 2：a=t 仅落库（96MB，无放置引用，可淘汰）；96+96=192MB ≤ 256MB 预算足够
+    seq = kittySeq(QByteArray("a=t,f=32,s=6000,v=4000,o=z,i=2"), z);
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray("\033_Gi=2;OK\033\\"));
+    sent.clear();
+    QVERIFY(scr->hasKittyImage(1));
+    QVERIFY(scr->hasKittyImage(2));
+    // 图 3：再 96MB → 288>256，优先淘汰无放置引用的图 2 后成功（ENOSPC 淘汰重试路径）
+    seq = kittySeq(headT + "3", z);
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray("\033_Gi=3;OK\033\\"));
+    sent.clear();
+    QVERIFY(scr->hasKittyImage(1));  // 有放置引用，不受影响
+    QVERIFY(!scr->hasKittyImage(2)); // 无放置引用，被优先淘汰
+    QVERIFY(scr->hasKittyImage(3));
+    // 图 4：图 1、3 均有放置引用，无可淘汰项（192+96=288>256）→ ENOSPC 拒绝，既有图像不受影响
+    seq = kittySeq(headT + "4", z);
+    emu.receiveData(seq.constData(), int(seq.size()));
+    QCOMPARE(sent, QByteArray("\033_Gi=4;ENOSPC:pixel budget exceeded\033\\"));
+    QVERIFY(scr->hasKittyImage(1));
+    QVERIFY(scr->hasKittyImage(3));
+    QVERIFY(!scr->hasKittyImage(4));
 }
 
 QTEST_MAIN(TestKittyGraphics)

@@ -1692,6 +1692,17 @@ void Screen::evictUnreferencedKittyImages(qint64 bytesNeeded)
     }
 }
 
+void Screen::evictAllUnreferencedKittyImages()
+{
+    for (int i = 0; i < _kittyEvictionOrder.size();) {
+        const quint32 handle = _kittyEvictionOrder.at(i);
+        if (!kittyImageInUse(handle))
+            removeKittyImage(handle); // 内部 removeOne 保持 i 指向下一元素
+        else
+            i++;
+    }
+}
+
 bool Screen::kittyStoreImage(const QImage &image, quint32 clientId, quint32 *handleOut)
 {
     if (image.isNull())

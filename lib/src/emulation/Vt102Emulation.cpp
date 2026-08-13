@@ -57,6 +57,8 @@ void Vt102Emulation::reset() {
     // 退出 token 丢弃模式：否则 reset 后仍会持续吞吃后续输入
     tokenDiscard = false;
     abortSixel(); // 复位时丢弃未完成的 sixel 累积
+    abortApc();            // 复位时丢弃未完成的 APC 累积
+    _kittyParser.reset();  // 连半成品分块一并丢弃
     _kittyFlags = 0;
     _kittyFlagsStack.clear();
     resetModes();
@@ -294,6 +296,38 @@ void Vt102Emulation::receiveChar(char32_t cc) {
         return;
     }
 
+    // Kitty APC 累积中：绕过 tokenizer，直至 ST（ESC \）结束或 CAN/SUB 中止
+    if (_apcActive) {
+        if (_apcEscPending) {
+            _apcEscPending = false;
+            if (cc == U'\\') { // ST：APC 序列结束，喂解析器
+                finishApc();
+                return;
+            }
+            // ESC 后非 '\'：中止本条；ESC 与当前字节属于后续序列，重投正常解析
+            abortApc();
+            receiveChar(ESC);
+            receiveChar(cc);
+            return;
+        }
+        if (cc == ESC) {
+            _apcEscPending = true;
+            return;
+        }
+        if (cc == CNTL('X') || cc == CNTL('Z')) { // CAN / SUB：中止本条
+            abortApc();
+            return;
+        }
+        if (cc >= 0x20 && cc < 0x7F) {
+            if (_apcData.size() >= MAX_APC_DATA_LENGTH)
+                _apcOverflow = true; // 超上限：继续吞到 ST，ST 后丢弃并复位通道
+            else if (!_apcOverflow)
+                _apcData.append(char(cc));
+        }
+        // 其余 C0 控制字符在 APC 数据段内忽略（与 DCS 通道一致）
+        return;
+    }
+
     if ((cc == U'\r') || (cc == U'\n'))
         dupDisplayCharacter(cc);
     if (cc == DEL)
@@ -376,6 +410,18 @@ void Vt102Emulation::receiveChar(char32_t cc) {
                 resetTokenizer();
                 return;
             }
+        }
+        // Kitty 图形：APC ESC _ G —— 'G' 为引导符（ESC _ 之后立即出现）。
+        // 检测到后切换到独立累积通道（base64 负载可远超 MAX_TOKEN_LENGTH）；
+        // 其他 APC（非 'G' 引导）维持原路径：tokenBuffer 累积、ST 后丢弃。
+        // 注：cc 已经 addToCurrentToken 入缓冲，故 ESC _ G 三字节齐备时 pos==3
+        if (Cse && tokenBufferPos == 3 && tokenBuffer[1] == U'_' && cc == U'G') {
+            _apcActive = true;
+            _apcOverflow = false;
+            _apcEscPending = false;
+            _apcData.clear();
+            resetTokenizer();
+            return;
         }
         if (Cse) {
             prevCC = cc;
@@ -686,6 +732,188 @@ void Vt102Emulation::abortSixel()
     _sixelEscPending = false;
     _sixelData.clear();
     resetTokenizer();
+}
+
+void Vt102Emulation::finishApc()
+{
+    const bool overflow = _apcOverflow;
+    const QByteArray data = std::move(_apcData);
+    _apcActive = false;
+    _apcOverflow = false;
+    _apcEscPending = false;
+    _apcData.clear();
+    resetTokenizer();
+    if (overflow) {
+        _kittyParser.reset(); // 超 350MB：丢弃整条命令并中止半成品分块
+        return;
+    }
+    KittyGraphicsParser::Result res;
+    // 多块命令在末块 feed 前处于分块累积中；ENOSPC 后解析器已复位、负载不可重放，
+    // 故仅单块命令（首块即末块）可走"淘汰后重试"
+    const bool wasMidChunk = _kittyParser.midChunk();
+    auto status = _kittyParser.feed(data, _currentScreen->imageBytesRemaining(), res);
+    if (status == KittyGraphicsParser::Status::NeedMore)
+        return; // m=1 续块：等待后续 APC 序列（显示位置以末块到达时的光标为准）
+    // ENOSPC 且单块命令：先淘汰无放置引用图像后重试一次
+    if (status == KittyGraphicsParser::Status::Error && res.errorCode == "ENOSPC"
+            && !wasMidChunk) {
+        _currentScreen->evictAllUnreferencedKittyImages();
+        res = KittyGraphicsParser::Result{};
+        status = _kittyParser.feed(data, _currentScreen->imageBytesRemaining(), res);
+    }
+    if (status == KittyGraphicsParser::Status::NeedMore)
+        return;
+    executeKittyCommand(res, data);
+}
+
+void Vt102Emulation::abortApc()
+{
+    _apcActive = false;
+    _apcOverflow = false;
+    _apcEscPending = false;
+    _apcData.clear();
+    _kittyParser.reset(); // 分块流被打断：丢弃半成品
+    resetTokenizer();
+}
+
+void Vt102Emulation::sendKittyResponse(quint32 imageId, quint32 placementId,
+                                       bool includePlacement, bool ok,
+                                       const QByteArray &error)
+{
+    QByteArray resp = "\033_Gi=" + QByteArray::number(imageId);
+    if (includePlacement)
+        resp += ",p=" + QByteArray::number(placementId);
+    resp += ';';
+    resp += ok ? QByteArray("OK") : error;
+    resp += "\033\\";
+    sendString(resp.constData(), int(resp.size())); // 与 DECRQM 应答同路径：sendData → pty
+}
+
+void Vt102Emulation::executeKittyCommand(const KittyGraphicsParser::Result &res,
+                                         const QByteArray &rawChunk)
+{
+    Q_UNUSED(rawChunk); // 保留给后续多命令复用，稳定接口
+    Screen *scr = _currentScreen;
+
+    // 解析/解码失败：能定位 i= 时回错误码（q=2 抑制），否则静默忽略
+    if (!res.errorCode.isEmpty()) {
+        if (res.imageId != 0 && res.quiet != 2)
+            sendKittyResponse(res.imageId, 0, false, false,
+                              res.errorCode + ':' + res.errorMessage);
+        return;
+    }
+
+    const KittyCommand &cmd = res.command;
+    const bool suppressOk = (cmd.quiet == 1);
+    const bool suppressErr = (cmd.quiet == 2);
+    const bool echoP = (cmd.placementId != 0);
+    auto fail = [&](const char *code, const char *msg) {
+        if (cmd.imageId != 0 && !suppressErr)
+            sendKittyResponse(cmd.imageId, 0, false, false,
+                              QByteArray(code) + ':' + msg);
+    };
+    auto ok = [&] {
+        if (cmd.imageId != 0 && !suppressOk)
+            sendKittyResponse(cmd.imageId, cmd.placementId, echoP, true);
+    };
+
+    // 不支持的传输介质（t=f/t/s）：回 EINVAL，不崩（解析器对需像素的动作已先行同码拒绝，此处兜底）
+    if (cmd.medium == 'f' || cmd.medium == 't' || cmd.medium == 's') {
+        fail("EINVAL", "unsupported medium");
+        return;
+    }
+
+    switch (cmd.action) {
+    case 'q':
+        // 查询：解析器已试加载（成败在此之前的 Error 路径），不存储不替换
+        ok();
+        return;
+    case 't':
+    case 'T': {
+        // 重传语义：已有同 id 图像时先删旧图及其全部放置，新数据落库但不自动显示
+        const bool retransmit = (cmd.imageId != 0) && scr->hasKittyImage(cmd.imageId);
+        if (retransmit)
+            scr->kittyDeleteByImage(cmd.imageId, 0, true);
+        quint32 imageHandle = 0;
+        if (!scr->kittyStoreImage(cmd.image, cmd.imageId, &imageHandle)) {
+            fail("ENOSPC", "pixel budget exceeded");
+            return;
+        }
+        if (cmd.action == 't' || retransmit) {
+            ok();
+            return;
+        }
+        // a=T 新图：落库并放置（匿名图像 i=0 也在此显示，不占 id 命名空间）
+        KittyPlacementParams params;
+        params.placementId = cmd.placementId;
+        params.srcX = cmd.srcX; params.srcY = cmd.srcY;
+        params.srcW = cmd.srcW; params.srcH = cmd.srcH;
+        params.cellXOff = cmd.cellXOff; params.cellYOff = cmd.cellYOff;
+        params.cols = cmd.cols; params.rows = cmd.rows;
+        params.zIndex = cmd.zIndex;
+        int colsUsed = 0, rowsUsed = 0;
+        const auto err = scr->kittyPlace(imageHandle, cmd.imageId, params,
+                                         nullptr, &colsUsed, &rowsUsed);
+        if (err != KittyPlaceError::Ok) {
+            fail("EINVAL", "bad placement");
+            return;
+        }
+        // kitty 光标语义（与 sixel 的 xterm 语义不同）：右移放置列数、下移放置行数；
+        // C=1 时光标不移动。越出屏幕/滚动区的落点由实现自定（取 Screen 现有钳位行为）
+        if (!cmd.cursorNoMove) {
+            scr->cursorRight(colsUsed);
+            scr->cursorDown(rowsUsed);
+        }
+        ok();
+        return;
+    }
+    case 'p': {
+        const quint32 imageHandle = scr->kittyImageHandle(cmd.imageId);
+        if (imageHandle == 0) {
+            fail("ENOENT", "no such image");
+            return;
+        }
+        KittyPlacementParams params;
+        params.placementId = cmd.placementId;
+        params.srcX = cmd.srcX; params.srcY = cmd.srcY;
+        params.srcW = cmd.srcW; params.srcH = cmd.srcH;
+        params.cellXOff = cmd.cellXOff; params.cellYOff = cmd.cellYOff;
+        params.cols = cmd.cols; params.rows = cmd.rows;
+        params.zIndex = cmd.zIndex;
+        int colsUsed = 0, rowsUsed = 0;
+        const auto err = scr->kittyPlace(imageHandle, cmd.imageId, params,
+                                         nullptr, &colsUsed, &rowsUsed);
+        if (err != KittyPlaceError::Ok) {
+            fail("EINVAL", "bad placement");
+            return;
+        }
+        if (!cmd.cursorNoMove) {
+            scr->cursorRight(colsUsed);
+            scr->cursorDown(rowsUsed);
+        }
+        ok();
+        return;
+    }
+    case 'd': {
+        // 删除命令到达时分块上传未完成的场景已由 abortApc/打断规则覆盖（新命令即打断）
+        switch (cmd.deleteWhat) {
+        case 'a': scr->kittyDeleteAll(false); ok(); return;
+        case 'A': scr->kittyDeleteAll(true); ok(); return;
+        case 'i': scr->kittyDeleteByImage(cmd.imageId, cmd.placementId, false); ok(); return;
+        case 'I': scr->kittyDeleteByImage(cmd.imageId, cmd.placementId, true); ok(); return;
+        case 'c': scr->kittyDeleteAtCursor(false); ok(); return;
+        case 'C': scr->kittyDeleteAtCursor(true); ok(); return;
+        default: return; // 其余删除变体（n/f/q/r/x/y/z）：忽略，无应答
+        }
+    }
+    case 'f': // 动画帧管理：本轮不做
+    case 'c': // 动画帧合成：本轮不做
+        fail("EINVAL", "unsupported action");
+        return;
+    default:
+        fail("EINVAL", "unsupported action");
+        return;
+    }
 }
 
 void Vt102Emulation::processWindowAttributeChange(int attributeToChange, QString newValue) {
