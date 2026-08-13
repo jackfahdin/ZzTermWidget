@@ -42,6 +42,8 @@ private slots:
     void testSixelPixelBudgetDrops();
     void testSixelDcsAnchorsImage();
     void testSixelAnchorAtCursorPosition();
+    void testSixelP2FillsBackground();
+    void testSixelAbortOnCanSub();
     void testSixelTextContinuesBelowImage();
     void testSixelInvalidDataSilentlyDropped();
     void testSixelAbortOnEsc();
@@ -696,7 +698,8 @@ void TestEmulation::testSixelDcsAnchorsImage()
 }
 
 /**
- * @brief 锚定位置跟随文本光标（含 DCS 参数 P2：`\033P2q` 填底语义被正确解析传递）。
+ * @brief 锚定位置跟随文本光标：CSI 定位后锚定到光标所在行列。
+ * @note 本用例的 sixel 流为 `\033Pq`（无 DCS 参数），P2 填底语义见 testSixelP2FillsBackground()。
  */
 void TestEmulation::testSixelAnchorAtCursorPosition()
 {
@@ -711,6 +714,64 @@ void TestEmulation::testSixelAnchorAtCursorPosition()
     QCOMPARE(placements.size(), 1);
     QCOMPARE(placements[0].startCol, 9);
     QCOMPARE(scr->getCursorY(), 5);
+}
+
+/**
+ * @brief DCS 参数 P2=2：非透明底，未着色像素以 0 号色填底。
+ * @note P2 是 DCS 头部的第 2 个参数（`\033P1;2q`），覆盖 parts[1].toInt() 解析分支；
+ *       `\033P2q` 的 "2" 是 P1（宽高比，忽略），P2 缺省仍为透明底——一并钉死该语义。
+ */
+void TestEmulation::testSixelP2FillsBackground()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setCellPixelSize(8, 16);
+    // 2x6 图：'@' 只写 (0,0)，'~' 写满第 1 列；(0,1..5) 未着色，P2=2 时应被 0 号红色填底
+    const QByteArray seq = QByteArray("\033P1;2q#0;2;100;0;0#0@~\033\\") // P2=2：填底
+                           + QByteArray("\033Pq#0;2;100;0;0#0@~\033\\")   // 无 P2：透明底对照
+                           + QByteArray("\033P2q#0;2;100;0;0#0@~\033\\"); // 仅 P1=2：仍透明底
+    emu.receiveData(seq.constData(), int(seq.size()));
+    Screen *scr = emu.createWindow()->screen();
+    const auto fillPlacements = scr->imagePlacements(0);
+    QCOMPARE(fillPlacements.size(), 1);
+    const SixelImage *fillImg = scr->sixelImage(fillPlacements[0].imageId);
+    QVERIFY(fillImg != nullptr);
+    QCOMPARE(fillImg->image.size(), QSize(2, 6));
+    QCOMPARE(fillImg->transparentBackground, false);
+    QCOMPARE(fillImg->image.pixelColor(0, 5), QColor(255, 0, 0)); // 未着色区填入 0 号色
+    for (int row = 1; row <= 2; row++) { // 两个透明底对照组
+        const auto placements = scr->imagePlacements(row);
+        QCOMPARE(placements.size(), 1);
+        const SixelImage *img = scr->sixelImage(placements[0].imageId);
+        QVERIFY(img != nullptr);
+        QCOMPARE(img->transparentBackground, true);
+        QCOMPARE(img->image.pixelColor(0, 5).alpha(), 0); // 未着色区保持透明
+    }
+}
+
+/**
+ * @brief 数据段中途 CAN(0x18)/SUB(0x1A)：中止该图不锚定，后续 sixel 流照常解析锚定。
+ */
+void TestEmulation::testSixelAbortOnCanSub()
+{
+    Vt102Emulation emu;
+    initEmu(emu, 24, 80);
+    emu.setCellPixelSize(8, 16);
+    // 第 0 行：CAN 中止第一张图，随后完整流正常锚定
+    const QByteArray canSeq = QByteArray("\033Pq#0;2;100;0;0#0@@\x18") + minimalSixelStream();
+    emu.receiveData(canSeq.constData(), int(canSeq.size()));
+    Screen *scr = emu.createWindow()->screen();
+    const auto canPlacements = scr->imagePlacements(0);
+    QCOMPARE(canPlacements.size(), 1); // 仅后续完整流的图
+    const SixelImage *canImg = scr->sixelImage(canPlacements[0].imageId);
+    QVERIFY(canImg != nullptr);
+    QCOMPARE(canImg->image.pixelColor(0, 0), QColor(255, 0, 0)); // 后续流解码正确
+    QCOMPARE(scr->getCursorY(), 1);
+    // 第 1 行：SUB 中止，同样语义
+    const QByteArray subSeq = QByteArray("\033Pq#0;2;100;0;0#0@@\x1a") + minimalSixelStream();
+    emu.receiveData(subSeq.constData(), int(subSeq.size()));
+    QCOMPARE(scr->imagePlacements(1).size(), 1);
+    QCOMPARE(scr->getCursorY(), 2);
 }
 
 /**
