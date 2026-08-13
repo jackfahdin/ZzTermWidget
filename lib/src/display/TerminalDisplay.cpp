@@ -1443,6 +1443,14 @@ void TerminalDisplay::updateImage() {
     }
     _usedColumns = columnsToUpdate;
 
+    // sixel 图像锚定/销毁不改动字符单元格，逐格脏区比对感知不到；
+    // Screen 置位图形脏标志时把已用区域整体标脏补刷一次（低频事件，代价可接受）
+    if (Screen *scr = _screenWindow->screen(); scr && scr->graphicsDirty()) {
+        dirtyRegion |= QRect(_leftMargin + tLx, _topMargin + tLy,
+                             _fontWidth * _usedColumns, _fontHeight * _usedLines);
+        scr->clearGraphicsDirty();
+    }
+
     dirtyRegion |= _inputMethodData.previousPreeditRect;
 
     // update the parts of the display which have changed
@@ -1695,6 +1703,7 @@ void TerminalDisplay::paintEvent(QPaintEvent *pe) {
     for (auto rect = regToDraw.begin(); rect != regToDraw.end(); rect++) {
         drawBackground(paint, *rect, _colorTable[DEFAULT_BACK_COLOR].color,
                                      true /* use opacity setting */);
+        drawSixelImages(paint, *rect); // sixel 图像在文本层之下（xterm/wezterm 语义）
         drawContents(paint, *rect);
     }
     drawInputMethodPreeditString(paint, preeditRect());
@@ -1908,6 +1917,45 @@ QRect TerminalDisplay::calculateTextArea(int topLeftX, int topLeftY,
             _fixedFont ? _fontWidth * length : textWidth(startColumn, length, line);
     return {origin.x() + left, origin.y() + top, width,
                     _fontHeight};
+}
+
+void TerminalDisplay::drawSixelImages(QPainter &paint, const QRect &rect)
+{
+    if (!_screenWindow)
+        return;
+    Screen *screen = _screenWindow->screen();
+    if (!screen)
+        return;
+
+    const QPoint tL = contentsRect().topLeft();
+    // 与 drawContents 相同的可见行范围换算
+    const int luy = qMin(_usedLines - 1,
+                         qMax(0, (rect.top() - tL.y() - _topMargin) / _fontHeight));
+    const int rly = qMin(_usedLines - 1,
+                         qMax(0, (rect.bottom() - tL.y() - _topMargin) / _fontHeight));
+    const int topLine = _screenWindow->currentLine(); // 窗口第 0 行对应的绝对行
+
+    for (int y = luy; y <= rly; y++) {
+        const auto placements = screen->imagePlacements(topLine + y);
+        for (const ImagePlacement &p : placements) {
+            const SixelImage *img = screen->sixelImage(p.imageId);
+            if (!img)
+                continue;
+            // 本行显示图像的第 rowOffset 个水平切片；末行切片可能不足一整行高，
+            // 部分滚出的行经 QPainter 重绘区域自动裁剪
+            const int srcY = p.rowOffset * _fontHeight;
+            if (srcY >= img->image.height())
+                continue;
+            const int sliceH = qMin(_fontHeight, img->image.height() - srcY);
+            const QRect target(_leftMargin + tL.x() + p.startCol * _fontWidth,
+                               _topMargin + tL.y() + y * _fontHeight,
+                               img->image.width(), sliceH);
+            if (!target.intersects(rect))
+                continue;
+            const QRect source(0, srcY, img->image.width(), sliceH);
+            paint.drawImage(target, img->image, source);
+        }
+    }
 }
 
 void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {

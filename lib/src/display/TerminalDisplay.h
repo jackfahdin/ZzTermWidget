@@ -749,6 +749,13 @@ private:
     // drawTextFragment() to draw the fragments
     void drawContents(QPainter &paint, const QRect &rect);
     /**
+     * @brief 绘制 sixel 图像层（文本层之下）。
+     * @note 在 paintEvent 中 drawBackground 之后、drawContents 之前调用；
+     *       按行级放置引用逐行裁剪图像切片（1 sixel 像素 = 1 设备像素），
+     *       多行引用拼出完整图；QPainter 自动裁剪到重绘区域。
+     */
+    void drawSixelImages(QPainter &paint, const QRect &rect);
+    /**
      * @brief 改造前的逐片段文本绘制路径（drawContents 批次聚合的像素基准与回退）。
      * @param paint 目标画笔。
      * @param rect 需要重绘的区域。

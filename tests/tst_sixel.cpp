@@ -1,6 +1,12 @@
 #include <QtTest>
 
+#include <QFontDatabase>
+
 #include "SixelDecoder.h"
+#include "Vt102Emulation.h"
+#include "ScreenWindow.h"
+#include "Screen.h"
+#include "TerminalDisplay.h"
 
 /**
  * @brief Sixel 解码器的纯逻辑单测（无终端状态，直接喂 data 段断言 QImage）。
@@ -20,6 +26,7 @@ private slots:
     void testRasterAttributes();
     void testDimensionCapRejects();
     void testInvalidDataRejectedOrIgnored();
+    void testDisplayPaintsImageUnderText();
 };
 
 /**
@@ -139,6 +146,74 @@ void TestSixel::testInvalidDataRejectedOrIgnored()
     const auto result = SixelDecoder::decode("\x01\x02#0;2;100;0;0\x7F#0@", 1);
     QVERIFY(result.has_value());
     QCOMPARE(result->image.size(), QSize(1, 1));
+}
+
+/**
+ * @brief 构造 sixel 渲染测试环境（镜像 tst_rendering 的 initRenderEnv，另同步单元格像素尺寸）。
+ */
+static void initSixelRenderEnv(Vt102Emulation &emu, ScreenWindow *&win, TerminalDisplay &display)
+{
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setImageSize(24, 80);
+    win = emu.createWindow();
+    win->setWindowLines(24);
+    display.setVTFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    display.setBlinkingCursor(false);
+    display.setBlinkingTextEnabled(false);
+    display.setScreenWindow(win);
+    display.resize(800, 600);
+    emu.setCellPixelSize(display.cellPixelWidth(), display.cellPixelHeight());
+}
+
+/**
+ * @brief 绘制层：8x18 纯红 sixel 图渲染进显示组件（1:1 设备像素），清行后消失。
+ * @note 只抽查红色像素包围盒尺寸（8x18 确定），不逐像素锁整张，避免字体环境敏感。
+ */
+void TestSixel::testDisplayPaintsImageUnderText()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initSixelRenderEnv(emu, win, display);
+
+    // 3 个位带各 '!8~'：8 列 x 18 行纯红（'~'=63 置满 6 行，'-' 换带）
+    const QByteArray seq = QByteArray("\033Pq#0;2;100;0;0#0!8~-!8~-!8~\033\\");
+    emu.receiveData(seq.constData(), int(seq.size()));
+    display.updateImage(); // 同步触发脏区计算（绕过 bufferedUpdate 定时器）
+
+    QImage frame(display.size(), QImage::Format_ARGB32);
+    frame.fill(Qt::black);
+    display.render(&frame);
+
+    // 提取红色像素包围盒：应为 8x18（1:1 设备像素映射；位置随边距浮动，不锁定）
+    const auto isRed = [](const QColor &c) {
+        return c.red() > 200 && c.green() < 60 && c.blue() < 60;
+    };
+    int minX = frame.width(), minY = frame.height(), maxX = -1, maxY = -1;
+    for (int y = 0; y < frame.height(); y++)
+        for (int x = 0; x < frame.width(); x++)
+            if (isRed(frame.pixelColor(x, y))) {
+                minX = qMin(minX, x);
+                maxX = qMax(maxX, x);
+                minY = qMin(minY, y);
+                maxY = qMax(maxY, y);
+            }
+    QVERIFY(maxX >= 0); // 存在红色区域
+    QCOMPARE(maxX - minX + 1, 8);
+    QCOMPARE(maxY - minY + 1, 18);
+
+    // 清行销毁：图像各行引用随 CSI 2 K 释放，重绘后红色消失
+    const QByteArray clearSeq = QByteArray("\033[H\033[2K\033[B\033[2K\033[B\033[2K\033[B\033[2K");
+    emu.receiveData(clearSeq.constData(), int(clearSeq.size()));
+    QVERIFY(win->screen()->graphicsDirty()); // 清行销毁引用必须置位图形脏标志，否则实机残留图像
+    display.updateImage();
+    QVERIFY(!win->screen()->graphicsDirty()); // updateImage 消费并清除标志
+    QImage cleared(display.size(), QImage::Format_ARGB32);
+    cleared.fill(Qt::black);
+    display.render(&cleared);
+    for (int y = 0; y < cleared.height(); y++)
+        for (int x = 0; x < cleared.width(); x++)
+            QVERIFY(!isRed(cleared.pixelColor(x, y)));
 }
 
 QTEST_MAIN(TestSixel)

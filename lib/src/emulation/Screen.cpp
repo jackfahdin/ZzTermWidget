@@ -1575,6 +1575,9 @@ const SixelImage *Screen::sixelImage(quint32 imageId) const
 
 void Screen::releaseImageLine(ImageRefLine &row)
 {
+    if (row.isEmpty())
+        return;
+    _graphicsDirty = true; // 引用销毁让图像（部分）消失，字符层无变化，需显示层补刷
     for (const ImagePlacement &p : row) {
         auto it = _imageRefs.find(p.imageId);
         if (it != _imageRefs.end() && --it.value() == 0) {
