@@ -57,18 +57,18 @@ struct HyperlinkSegment {
  * @brief Sixel 图像在单个网格行上的放置引用。
  *
  * 一张图像纵向跨 ceil(像素高/单元格像素高) 个网格行，每行一条引用；
- * 同一 imageId 的多行引用共享屏级 SixelImage（引用计数管理生命周期）。
+ * 同一 imageId 的多行引用共享屏级 ScreenImage（引用计数管理生命周期）。
  */
 struct ImagePlacement {
     int startCol;    ///< 起始列（锚定列）
-    quint32 imageId; ///< 图像标识，经 Screen::sixelImage() 换取像素数据
+    quint32 imageId; ///< 图像标识，经 Screen::image() 换取像素数据
     int rowOffset;   ///< 本行在图像内的行偏移（0 = 图像首行），绘制时换算源裁剪
 };
 
 /**
- * @brief 屏级存储的一张 sixel 图像。
+ * @brief 屏级存储的一张图像（sixel/kitty 共用）。
  */
-struct SixelImage {
+struct ScreenImage {
     QImage image;               ///< ARGB32 像素数据（隐式共享，拷贝廉价）
     bool transparentBackground; ///< true = 透明底（未着色区域透出文本背景）
 };
@@ -387,9 +387,9 @@ public:
     QVector<ImagePlacement> imagePlacements(int absoluteLine) const;
 
     /**
-     * @brief 返回 @p imageId 对应的图像；无效 id 返回 nullptr。
+     * @brief 返回 @p imageId 对应的图像（sixel/kitty 共用句柄空间）；无效 id 返回 nullptr。
      */
-    const SixelImage *sixelImage(quint32 imageId) const;
+    const ScreenImage *image(quint32 imageId) const;
 
     /**
      * @brief 设置网格单元格的像素尺寸（锚定时换算图像占用行数）。
@@ -407,12 +407,13 @@ public:
     void clearGraphicsDirty() { _graphicsDirty = false; }
 
     /**
-     * @brief 廉价查询当前是否存在任何 sixel 图像。
-     * @return 像素表非空（即有存活图像放置）时为 true。
+     * @brief 廉价查询当前是否存在任何图像（sixel/kitty 共用像素表）。
+     * @return 像素表非空时为 true。
      * @note 显示层视图滚动时据此短路：无图则跳过逐行放置表查询。
-     *       像素表与行放置表同生共死（引用计数归零即回收），O(1) 无需额外维护。
+     *       kitty 已传输未放置的图像也计入（仅影响脏区短路灵敏度，不影响正确性）；
+     *       sixel 像素表与行放置表同生共死（引用计数归零即回收），O(1) 无需额外维护。
      */
-    bool hasImages() const { return !_sixelImages.isEmpty(); }
+    bool hasImages() const { return !_images.isEmpty(); }
 
     /** Clear the entire screen and move the cursor to the home position.
      * Equivalent to calling clearEntireScreen() followed by home().
@@ -811,21 +812,21 @@ private:
     void releaseHyperlinkLine(HyperlinkLine &row);
     void clearAllHyperlinks();
 
-    // Sixel 图像 ----------------
+    // 图像锚定层（sixel/kitty 共用） ----------------
     // 结构与 OSC 8 链接段表同构：行级稀疏引用表（无图像的行为空 QVector，零额外堆分配）
     // + 屏级像素表 + 引用计数；引用随行清除/滚出/丢弃而销毁，计数归零时回收像素数据
     typedef QVector<ImagePlacement> ImageRefLine;
     ImageRefLine *_imageLines;               // [lines + 1]，与 screenLines 平行
     std::deque<ImageRefLine> _historyImages; // 与 history 行一一对应
-    QHash<quint32, SixelImage> _sixelImages; // imageId → 像素数据
-    QHash<quint32, int> _imageRefs;          // imageId → 行引用计数
-    quint32 _nextImageId = 1;
+    QHash<quint32, ScreenImage> _images;     // imageHandle → 像素数据（sixel/kitty 共用）
+    QHash<quint32, int> _imageRefs;          // sixel imageId → 行引用计数
+    quint32 _nextImageHandle = 1;
     qint64 _imageBytes = 0;                  // 现存图像累计字节数（像素预算记账）
     int _cellPixelWidth = 0;                 // 单元格像素宽（0 = 未同步）
     int _cellPixelHeight = 0;                // 单元格像素高（0 = 未同步，用兜底值）
     bool _graphicsDirty = false;             // 图像锚定/清空后需显示层整屏补刷一次
 
-    /** @brief 累计像素预算：现存 sixel 图像总字节数上限（256MB，ARGB32 4 字节/像素）。 */
+    /** @brief 累计像素预算：现存图像（sixel/kitty 共用）总字节数上限（256MB，ARGB32 4 字节/像素）。 */
     static constexpr qint64 MAX_IMAGE_BYTES = 256LL * 1024 * 1024;
     /** @brief 未同步字体度量时的兜底单元格像素高（常见等宽字体行高量级）。 */
     static constexpr int DEFAULT_CELL_PIXEL_HEIGHT = 16;

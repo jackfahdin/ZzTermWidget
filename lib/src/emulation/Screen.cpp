@@ -536,7 +536,7 @@ void Screen::reset(bool clearScreen) {
     saveCursor();
 
     clearAllHyperlinks(); // OSC 8：复位时丢弃全部链接段表与 URI 映射
-    clearAllImages(); // Sixel：复位时丢弃全部图像与引用
+    clearAllImages(); // 复位时丢弃全部图像与引用
 
     if (clearScreen)
         clear();
@@ -1538,8 +1538,8 @@ void Screen::anchorImage(const QImage &image, bool transparentBackground)
     const int cellH = _cellPixelHeight > 0 ? _cellPixelHeight : DEFAULT_CELL_PIXEL_HEIGHT;
     const int gridRows = qMax(1, (image.height() + cellH - 1) / cellH);
 
-    const quint32 id = _nextImageId++;
-    _sixelImages.insert(id, SixelImage {image, transparentBackground});
+    const quint32 id = _nextImageHandle++;
+    _images.insert(id, ScreenImage {image, transparentBackground});
     _imageRefs.insert(id, 0);
     _imageBytes += bytes;
     _graphicsDirty = true;
@@ -1567,10 +1567,10 @@ QVector<ImagePlacement> Screen::imagePlacements(int absoluteLine) const
     return _imageLines[absoluteLine - histLines];
 }
 
-const SixelImage *Screen::sixelImage(quint32 imageId) const
+const ScreenImage *Screen::image(quint32 imageId) const
 {
-    const auto it = _sixelImages.constFind(imageId);
-    return it == _sixelImages.constEnd() ? nullptr : &it.value();
+    const auto it = _images.constFind(imageId);
+    return it == _images.constEnd() ? nullptr : &it.value();
 }
 
 void Screen::releaseImageLine(ImageRefLine &row)
@@ -1582,10 +1582,10 @@ void Screen::releaseImageLine(ImageRefLine &row)
         auto it = _imageRefs.find(p.imageId);
         if (it != _imageRefs.end() && --it.value() == 0) {
             _imageRefs.erase(it);
-            const auto imgIt = _sixelImages.find(p.imageId);
-            if (imgIt != _sixelImages.end()) {
+            const auto imgIt = _images.find(p.imageId);
+            if (imgIt != _images.end()) {
                 _imageBytes -= qint64(imgIt->image.width()) * imgIt->image.height() * 4;
-                _sixelImages.erase(imgIt);
+                _images.erase(imgIt);
             }
         }
     }
@@ -1598,7 +1598,7 @@ void Screen::clearAllImages()
     for (int i = 0; i < lines + 1; i++)
         _imageLines[i].clear();
     _historyImages.clear();
-    _sixelImages.clear();
+    _images.clear();
     _imageRefs.clear();
     _imageBytes = 0;
     _graphicsDirty = true; // 图像消失同样需要补刷

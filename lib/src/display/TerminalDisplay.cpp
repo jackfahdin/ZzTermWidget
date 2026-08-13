@@ -1957,7 +1957,7 @@ void TerminalDisplay::drawSixelImages(QPainter &paint, const QRect &rect)
     for (int y = luy; y <= rly; y++) {
         const auto placements = screen->imagePlacements(topLine + y);
         for (const ImagePlacement &p : placements) {
-            const SixelImage *img = screen->sixelImage(p.imageId);
+            const ScreenImage *img = screen->image(p.imageId);
             if (!img)
                 continue;
             // 本行显示图像的第 rowOffset 个水平切片；末行切片可能不足一整行高，

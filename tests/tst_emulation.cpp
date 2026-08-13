@@ -575,7 +575,7 @@ void TestEmulation::testSixelAnchorStoresAndMovesCursor()
     QCOMPARE(scr->imagePlacements(2)[0].rowOffset, 2);
     QVERIFY(scr->imagePlacements(3).isEmpty());
     QCOMPARE(scr->getCursorY(), 3); // 光标在图最后一行之下
-    const SixelImage *stored = scr->sixelImage(row0[0].imageId);
+    const ScreenImage *stored = scr->image(row0[0].imageId);
     QVERIFY(stored != nullptr);
     QCOMPARE(stored->image.size(), QSize(16, 33));
     QVERIFY(stored->transparentBackground);
@@ -612,10 +612,10 @@ void TestEmulation::testSixelClearLineDestroysImage()
     Screen *scr = emu.createWindow()->screen();
     scr->anchorImage(solidImage({16, 16}, Qt::red), false); // 1 网格行
     const quint32 id = scr->imagePlacements(0)[0].imageId;
-    QVERIFY(scr->sixelImage(id) != nullptr);
+    QVERIFY(scr->image(id) != nullptr);
     emu.receiveData("\033[H\033[2K", 7); // 回第 0 行清整行
     QVERIFY(scr->imagePlacements(0).isEmpty());
-    QVERIFY(scr->sixelImage(id) == nullptr);
+    QVERIFY(scr->image(id) == nullptr);
 }
 
 /**
@@ -690,7 +690,7 @@ void TestEmulation::testSixelDcsAnchorsImage()
     const auto placements = scr->imagePlacements(0);
     QCOMPARE(placements.size(), 1);
     QCOMPARE(placements[0].startCol, 0);
-    const SixelImage *img = scr->sixelImage(placements[0].imageId);
+    const ScreenImage *img = scr->image(placements[0].imageId);
     QVERIFY(img != nullptr);
     QCOMPARE(img->image.size(), QSize(1, 1));
     QCOMPARE(img->image.pixelColor(0, 0), QColor(255, 0, 0));
@@ -734,7 +734,7 @@ void TestEmulation::testSixelP2FillsBackground()
     Screen *scr = emu.createWindow()->screen();
     const auto fillPlacements = scr->imagePlacements(0);
     QCOMPARE(fillPlacements.size(), 1);
-    const SixelImage *fillImg = scr->sixelImage(fillPlacements[0].imageId);
+    const ScreenImage *fillImg = scr->image(fillPlacements[0].imageId);
     QVERIFY(fillImg != nullptr);
     QCOMPARE(fillImg->image.size(), QSize(2, 6));
     QCOMPARE(fillImg->transparentBackground, false);
@@ -742,7 +742,7 @@ void TestEmulation::testSixelP2FillsBackground()
     for (int row = 1; row <= 2; row++) { // 两个透明底对照组
         const auto placements = scr->imagePlacements(row);
         QCOMPARE(placements.size(), 1);
-        const SixelImage *img = scr->sixelImage(placements[0].imageId);
+        const ScreenImage *img = scr->image(placements[0].imageId);
         QVERIFY(img != nullptr);
         QCOMPARE(img->transparentBackground, true);
         QCOMPARE(img->image.pixelColor(0, 5).alpha(), 0); // 未着色区保持透明
@@ -763,7 +763,7 @@ void TestEmulation::testSixelAbortOnCanSub()
     Screen *scr = emu.createWindow()->screen();
     const auto canPlacements = scr->imagePlacements(0);
     QCOMPARE(canPlacements.size(), 1); // 仅后续完整流的图
-    const SixelImage *canImg = scr->sixelImage(canPlacements[0].imageId);
+    const ScreenImage *canImg = scr->image(canPlacements[0].imageId);
     QVERIFY(canImg != nullptr);
     QCOMPARE(canImg->image.pixelColor(0, 0), QColor(255, 0, 0)); // 后续流解码正确
     QCOMPARE(scr->getCursorY(), 1);
