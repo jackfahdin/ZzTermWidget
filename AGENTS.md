@@ -11,7 +11,7 @@ cmake --build build --parallel
 
 本机 Qt 6.11.1 前缀：`/home/zz/Qt/6.11.1/gcc_64`。
 
-Qt 基线版本 6.8+（`find_package` 已强制 6.8；CI 三平台装 6.8.3，本机用 6.11.1）。
+Qt 基线版本 6.8+（`find_package` 已强制 6.8；CI 三平台装 6.8.2，本机用 6.11.1）。
 
 ## 测试
 
