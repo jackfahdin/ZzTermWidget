@@ -28,6 +28,8 @@ private slots:
     void testLocalRefresh();
     void testFullScreenScroll_data();
     void testFullScreenScroll();
+    void testLigatureRefresh_data();
+    void testLigatureRefresh();
 private:
     int m_frame = 0; ///< 帧奇偶计数：交替负载保证每次迭代都产生真实脏区
 };
@@ -213,6 +215,43 @@ void TestBenchmark::testFullScreenScroll()
         win->screen()->resetScrolledLines();
         win->screen()->resetDroppedLines();
         display.render(&image, QPoint(), display.lastDirtyRegion());
+    }
+}
+
+void TestBenchmark::testLigatureRefresh_data()
+{
+    QTest::addColumn<bool>("ligatures");
+    // 开关 A/B 对照：连字场景重绘耗时增量（规格 §3.6 门禁：开启增量 <10%）
+    QTest::newRow("连字重负载 关") << false;
+    QTest::newRow("连字重负载 开") << true;
+}
+
+/**
+ * @brief 连字场景：运算符密集的代码行负载全量重绘，开关 A/B 对照。
+ * @note 沿用本套件惯例不设硬性断言（机器差异大）：两行数字人工对比并记入
+ *       CHANGELOG，判定口径为规格 §3.6——开启后重绘耗时增量 <10% 为通过；
+ *       关闭行同时是"开关关闭零开销"的回归参照（应与既有全量重绘基线无统计学差异）。
+ * @note 拆分绘制采用"条带裁剪重绘同一布局"，整形开销 O(片段长 × 条带数)，
+ *       "开"行量化的正是这个开销。
+ */
+void TestBenchmark::testLigatureRefresh()
+{
+    QFETCH(bool, ligatures);
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initDisplayEnv(emu, win, display);
+    display.setLigaturesEnabled(ligatures);
+    QByteArray content;
+    for (int i = 0; i < 24; i++)
+        content += "if (a[i] >= b && c != d) { x += y->z; } // => ok == done\r\n";
+    emu.receiveData(content.constData(), int(content.size()));
+    display.updateImage();
+    QImage image(display.size(), QImage::Format_ARGB32);
+    image.fill(Qt::black);
+    display.render(&image); // warmup：吃掉 _drawTextTestFlag 一次性度量
+    QBENCHMARK {
+        display.render(&image);
     }
 }
 
