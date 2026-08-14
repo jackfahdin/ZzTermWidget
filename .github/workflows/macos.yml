@@ -21,7 +21,6 @@ jobs:
         with:
           version: '6.8.2'
           modules: 'qtmultimedia'
-          aqtversion: ==3.1.7
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
