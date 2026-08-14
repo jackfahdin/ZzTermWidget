@@ -28,8 +28,8 @@ option(ZZQTERMWIDGET_INSTALL "Generate install rules for ZzQTermWidget" ON)
 # The ptyqt subdirectory exposes its own install switch; keep it in sync.
 set(ZZPTYQT_INSTALL ${ZZQTERMWIDGET_INSTALL} CACHE BOOL "Install the ptyqt submodule" FORCE)
 
-find_package(QT NAMES Qt6 REQUIRED COMPONENTS Core)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS
+find_package(QT NAMES Qt6 6.8 REQUIRED COMPONENTS Core)
+find_package(Qt${QT_VERSION_MAJOR} 6.8 REQUIRED COMPONENTS
     Core
     Gui
     Widgets

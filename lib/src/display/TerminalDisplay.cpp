@@ -956,18 +956,13 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
     const bool useOverline = style->rendition & RE_OVERLINE || font().overline();
 
     QFont font = painter.font();
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
     // 连字真实开关语义：关闭 = 在字体上显式禁用 liga/calt 整形特性；开启 = 不设
     // 特性，沿用字体默认整形（HarfBuzz 默认启用 liga/calt，等宽连字字体自然产出
     // 连字字形）。特性差异与样式属性差异一样触发 setFont；常态（开关状态未变且
     // 样式一致）下 isFeatureSet 判定与开关相符，不会引入无谓的 setFont。
-    // Qt < 6.7 无 QFont::setFeature：关侧退化为现状行为（连字仍由字体默认整形
-    // 决定，无法显式禁用），仅注释声明。
+    // QFont::setFeature 需 Qt ≥ 6.7，项目 Qt 基线 6.8 故无条件启用。
     const bool ligatureFeatureMismatch =
             font.isFeatureSet(QFont::Tag("liga")) == _ligaturesEnabled;
-#else
-    constexpr bool ligatureFeatureMismatch = false;
-#endif
     if (font.bold() != useBold || font.underline() != useUnderline ||
             font.italic() != useItalic || font.strikeOut() != useStrikeOut ||
             font.overline() != useOverline || ligatureFeatureMismatch) {
@@ -978,7 +973,6 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
         font.setItalic(useItalic);
         font.setStrikeOut(useStrikeOut);
         font.setOverline(useOverline);
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
         if (_ligaturesEnabled) {
             // 开侧：清除可能残留的禁用特性，恢复字体默认整形
             font.unsetFeature(QFont::Tag("liga"));
@@ -987,7 +981,6 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
             font.setFeature(QFont::Tag("liga"), 0);
             font.setFeature(QFont::Tag("calt"), 0);
         }
-#endif
         painter.setFont(font);
     }
 

@@ -49,8 +49,8 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          arch: 'win64_msvc2019_64'
-          version: '6.5.3'
+          arch: 'win64_msvc2022_64'
+          version: '6.8.3'
           modules: 'qtmultimedia'
           aqtversion: '==3.1.7'
 

@@ -4,8 +4,7 @@ ZzQTermWidget 编程连字渲染（可选开关） / 2026-08-14
    内部接口不进公共头）：真实开关语义——开启时不设字体特性，沿用字体默认整形
    （HarfBuzz 默认启用 liga/calt），等宽连字字体下 ASCII 运算符序列（! # $ % &
    * + - . / : ; < = > ? @ \ ^ _ { | } ~ 的连续段，长度 ≥ 2）自然产出连字字形；
-   关闭时 QFont::setFeature 显式禁用 liga/calt 特性（Qt ≥ 6.7；旧 Qt 下关侧
-   退化为现状行为）。无连字字体时静默回退（开/关逐像素一致）。
+   关闭时 QFont::setFeature 显式禁用 liga/calt 特性（Qt 基线 6.8 恒可用）。无连字字体时静默回退（开/关逐像素一致）。
  * 实现备注：初版"条带裁剪重绘同一布局"拆分机制（drawLigatureSpans）因 614%
    重绘增量废弃删除；开/关绘制统一为单次整段 drawText，特性差异并入
    drawCharacters 字体调整块的 setFont 触发条件。bidi 与 #33 修复开关均不
