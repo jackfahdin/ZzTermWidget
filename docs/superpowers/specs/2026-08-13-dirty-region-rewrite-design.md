@@ -97,3 +97,4 @@ Emulation 输出 → ScreenWindow（scrollCount 累积）
 - 字形越界超过 ±1 格的极端字体（装饰性连写）可能裁切——以像素比对实测裁决是否升级 overhang 方案。
 - 部分滚动区（DECSTBM 子区域）不走像素搬迁（条件不满足自动回退）。
 - 滚动优化与轮 6 终审遗留（kitty DECSTBM 错位根治）正交，互不阻塞。
+  （kitty DECSTBM 错位已根治：2026-08-14 正确性修复包，kitty 绘制改逐行水平带切片）
