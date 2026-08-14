@@ -1703,6 +1703,26 @@ void TerminalDisplay::updateImage() {
                     spanMin = 0;
                     spanMax = columnsToUpdate - 1;
                 }
+                // 连字序列边界扩展：候选运算符的连续段（长度 ≥ 2 即连字序列）若与脏
+                // 跨度相交，整段纳入脏区——连字字形横跨整段落墨，段内任一格变脏而只
+                // 重绘部分格会新旧字形混杂残留（与斜体邻居升级同一动机；候选段边界
+                // 天然给出扩展终点，故做精确扩展而非整行升级）。只依赖字符掩码，
+                // 与字体是否真有连字字形无关（无连字字形时扩展无害，仅脏区略宽）
+                if (_ligaturesEnabled) {
+                    auto isCand = [&](int i) {
+                        return i >= 0 && i < columnsToUpdate
+                               && (newLine[i].rendition & RE_EXTENDED_CHAR) == 0
+                               && LigatureHelper::isCandidateChar(newLine[i].character);
+                    };
+                    // 跨度端格本身是候选字符才扩展：孤立候选字符（段长 1）
+                    // 邻居非候选，while 条件即刻失败，天然零扩展
+                    if (isCand(spanMin))
+                        while (spanMin > 0 && isCand(spanMin - 1))
+                            --spanMin;
+                    if (isCand(spanMax))
+                        while (spanMax + 1 < columnsToUpdate && isCand(spanMax + 1))
+                            ++spanMax;
+                }
             }
             const QRect dirtyRect =
                     QRect(_leftMargin + tLx + spanMin * _fontWidth,

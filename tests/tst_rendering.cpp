@@ -37,6 +37,7 @@ private slots:
     void testLigatureRendering();
     void testLigatureStyleBoundary();
     void testLigatureMutualExclusion();
+    void testLigatureDirtyRegion();
     void testDoubleHeightInkGeometry();
     void testDoubleHeightPixelEquivalence();
 };
@@ -1131,6 +1132,58 @@ void TestRendering::testLigatureMutualExclusion()
         renderFull(display);
         QCOMPARE(display.ligatureSplitFragmentCount(), 0);
     }
+}
+
+/**
+ * @brief 连字序列脏区扩展：编辑 4 格候选段 "==>>" 的中间一格，脏跨度必须从
+ *        编辑格 ±1 格的 [3,5] 向左扩展到序列起点（列 2），且增量重放与全量
+ *        渲染逐像素相等。
+ * @note 形状断言即先失败测试：未实现扩展时脏区左缘在列 3（minX-1）。
+ *       扩展逻辑只依赖候选字符掩码、与字体无关，无连字字体本地同样确定性验证；
+ *       增量重放比对为兜底安全网（连字字体下漏扩必留新旧字形混杂残影）。
+ */
+void TestRendering::testLigatureDirtyRegion()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initRenderEnv(emu, win, display);
+    display.setLigaturesEnabled(true);
+    const QByteArray setup = "\033[?25l\033[1;1Hx ==>> y"; // 候选段 "==>>" 在列 2..5（0 起）
+    emu.receiveData(setup.constData(), int(setup.size()));
+    pumpFrame(win);
+    pumpFrame(win);
+    renderFull(display); // warmup：吃掉 _drawTextTestFlag
+    const QImage base = renderFull(display);
+
+    // 编辑候选段中间一格（列 4：'>' → '='，新内容 "===>" 仍为候选段）
+    const QByteArray edit = "\033[1;5H=";
+    emu.receiveData(edit.constData(), int(edit.size()));
+    pumpFrame(win);
+
+    // 形状断言：脏跨度左缘必须扩展到序列起点列 2
+    const int fw = display.fontWidth();
+    const int fh = display.fontHeight();
+    const int left0 = display.contentsRect().left() + display.margin();
+    const int top0 = display.contentsRect().top() + display.margin();
+    const QRect band(0, top0, display.width(), fh);
+    int minLeft = display.width();
+    for (const QRect &r : display.lastDirtyRegion())
+        if (r.intersects(band))
+            minLeft = qMin(minLeft, r.left());
+    QVERIFY2(minLeft <= left0 + 2 * fw,
+             qPrintable(QStringLiteral("连字序列脏区左缘 %1 未扩展到序列起点 %2")
+                        .arg(minLeft).arg(left0 + 2 * fw)));
+
+    // 像素兜底：增量重放与全量渲染逐像素相等
+    const QImage incremental = replayDirtyRegion(display, base);
+    const QImage full = renderFull(display);
+    if (incremental != full) { // 排障辅助：落盘人工比对
+        incremental.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-lig-incremental.png")));
+        full.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-lig-full.png")));
+        base.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-lig-base.png")));
+    }
+    QCOMPARE(incremental, full);
 }
 
 QTEST_MAIN(TestRendering)
