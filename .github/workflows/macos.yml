@@ -29,4 +29,15 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test
+        # QDir::temp() 重定向到 runner.temp：测试断言失败时落盘的对照 PNG 随之集中，便于上传
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: ctest --test-dir build --output-on-failure
+
+      - name: Upload render dumps
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: render-dumps-macos
+          path: ${{ runner.temp }}/zzqtermwidget-*.png
+          if-no-files-found: ignore
