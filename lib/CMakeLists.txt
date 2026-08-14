@@ -18,6 +18,7 @@ set(QTERMWIDGET_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/emulation/KittyGraphicsParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/emulation/ScreenWindow.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/display/TerminalDisplay.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/display/LigatureHelper.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/widget/qtermwidget.cpp
 )
 
@@ -40,6 +41,7 @@ set(QTERMWIDGET_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/src/emulation/KittyGraphicsParser.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/emulation/ScreenWindow.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/display/TerminalDisplay.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/display/LigatureHelper.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qtermwidget.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/qtermwidget_version.h
 )

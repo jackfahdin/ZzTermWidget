@@ -1,6 +1,7 @@
 # 测试目标统一注册：链接静态库与 Qt6::Test，offscreen 平台运行
 set(QTERMWIDGET_TESTS
     tst_charwidth
+    tst_ligature
     tst_emulation
     tst_osc52
     tst_history

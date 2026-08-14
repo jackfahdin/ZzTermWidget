@@ -434,6 +434,24 @@ public:
     bool isScrollOptimizationEnabled() const { return _scrollOptimizationEnabled; }
 
     /**
+     * @brief 开关编程连字渲染。
+     * @param enabled true = ASCII 运算符序列在字体具备恰好等宽的连字字形时
+     *        整段整形绘制；false = 现有整段路径（默认，opt-in）。
+     * @note 值变化时触发全量重绘（不做局部刷新优化）。与 bidi、quardCRT #33
+     *       修复两开关两两互斥：任一开启时连字不生效（规格 §3.4）。
+     *       内部接口，不进公共头 qtermwidget.h。
+     */
+    void setLigaturesEnabled(bool enabled) {
+        if (_ligaturesEnabled == enabled)
+            return;
+        _ligaturesEnabled = enabled;
+        update();
+    }
+
+    /** @brief 查询编程连字渲染是否启用。 */
+    bool ligaturesEnabled() const { return _ligaturesEnabled; }
+
+    /**
      * @brief 纯整屏滚动快路径累计命中帧数。
      * @return 快路径通过错位检测并接管 moved 行的帧数。
      * @note 测试观测钩子：快路径无可观测行为差异，以此证明其真正接管
@@ -448,6 +466,15 @@ public:
      *       内部接口，不进公共头 qtermwidget.h。
      */
     QRegion lastDirtyRegion() const { return _lastDirtyRegion; }
+
+    /**
+     * @brief 连字拆分绘制累计执行次数。
+     * @return 自组件创建起 drawLigatureSpans() 实际完成拆分绘制的片段数。
+     * @note 测试观测钩子：无连字字体时拆分绘制与整段绘制逐像素一致、无可观测
+     *       行为差异，以此证明拆分路径真正执行（镜像 _drawTextTestFlag 的
+     *       内部观测点惯例）；内部接口，不进公共头 qtermwidget.h。
+     */
+    int ligatureSplitFragmentCount() const { return _ligatureSplitFragments; }
 
     /**
      * Sets the terminal screen section which is displayed in this widget.
@@ -975,6 +1002,7 @@ private:
     Screen *_lastImageScreen = nullptr;
     /** @brief 快路径累计命中帧数；scrollFastPathFrameCount() 测试钩子用。 */
     int _scrollFastPathFrames = 0;
+    int _ligatureSplitFragments = 0; ///< 连字拆分绘制累计执行次数（测试观测钩子用）
 
     ColorEntry _colorTable[TABLE_COLORS];
 
@@ -1102,6 +1130,7 @@ private:
     QWidget *messageParentWidget = nullptr;
 
     bool _fix_quardCRT_issue33 = false;
+    bool _ligaturesEnabled = false; ///< 编程连字渲染开关（默认关，opt-in）
 };
 
 class AutoScrollHandler : public QObject
