@@ -62,6 +62,12 @@ add_library(qtermwidget STATIC
 )
 add_library(ZzQTermWidget::qtermwidget ALIAS qtermwidget)
 
+# vendored utf8proc 直接编进本静态库：必须定义 UTF8PROC_STATIC，否则 Windows 下
+# utf8proc.h 的 UTF8PROC_DLLEXPORT 展开为 __declspec(dllimport)，落在库内定义上
+# 触发 MSVC C2491 / MinGW 同类错误（官方对静态/vendored 场景的开关，
+# 见 third_party/utf8proc/utf8proc.h:123-134）。Linux/macOS 下为 no-op。
+target_compile_definitions(qtermwidget PRIVATE UTF8PROC_STATIC)
+
 # 翻译：将 .ts 编译为 .qm，并内嵌到 :/lib/qtermwidget/translations
 if(TARGET Qt6::lrelease)
     file(GLOB QTERMWIDGET_TS_FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/translations/*.ts)
