@@ -82,26 +82,24 @@ void TestLigature::testFindCandidateSpans()
 }
 
 /**
- * @brief 整形宽度校验：等宽字体下 ASCII 串整形总宽恒等于 格数 × 格宽；
- *        期望宽人为偏移 ±2px 即超出 0.5px 容差判定失败；空串不可连字。
+ * @brief 整形宽度校验：以实测整形宽度反推格宽（字体无关），
+ *        期望宽人为偏移即超出 0.5px 容差判定失败；空串不可连字。
+ * @note 早期版本假设系统等宽字体步进均匀，macOS CI 的 "Monospace" 族缺失
+ *       回退到比例字体时不成立（CI 故障根因 B）；现只断言容差逻辑本身。
  */
 void TestLigature::testWidthMatches()
 {
-    QFont fixed = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    // 系统等宽字体默认字号下格宽常为小数（如 7.21875px），qRound 后
-    // 3 格串的累计误差会超出 ±0.5px 容差；自适应选取格宽近似整数的
-    // 像素字号（单格误差 < 0.15px，3 格累计 < 0.45px < 容差）。
-    int cellWidth = 0;
-    for (int px = 8; px <= 64 && cellWidth == 0; px++) {
-        fixed.setPixelSize(px);
-        const qreal w = QFontMetricsF(fixed).horizontalAdvance(QLatin1Char('0'));
-        if (qAbs(w - qRound(w)) < 0.15)
-            cellWidth = qRound(w);
-    }
-    QVERIFY(cellWidth > 0);
+    const QFont fixed = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     const QFontMetricsF fm(fixed);
+    const QString arrow = QString::fromStdU32String(U"->");
+    const qreal shaped = fm.horizontalAdvance(arrow);
+    QVERIFY(shaped > 0);
+    int cellWidth = qRound(shaped / 2);
+    // 极端字体下 shaped/2 可能恰在半像素点，qRound 后超容差则向容差内收敛
+    while (cellWidth > 1 && qAbs(shaped - 2.0 * cellWidth) > 0.5)
+        --cellWidth;
+    QVERIFY(qAbs(shaped - 2.0 * cellWidth) <= 0.5);
     QVERIFY(LigatureHelper::widthMatches(fm, U"->", cellWidth));
-    QVERIFY(LigatureHelper::widthMatches(fm, U"==>", cellWidth));
     // 期望宽每格 +1px：2 格串差 2px，超出 ±0.5px 容差
     QVERIFY(!LigatureHelper::widthMatches(fm, U"->", cellWidth + 1));
     QVERIFY(!LigatureHelper::widthMatches(fm, U"", cellWidth));

@@ -43,6 +43,31 @@ private slots:
 };
 
 /**
+ * @brief 选一个真实存在的等宽字体（跨平台测试环境用）。
+ * @return 按平台习惯优先 DejaVu Sans Mono/Menlo/Consolas/Courier New，
+ *         再退任意 fixedPitch 族，最后回退系统 FixedFont。
+ * @note macOS 上 systemFont(FixedFont) 返回不存在的 "Monospace" 族，Qt 静默
+ *       回退比例字体会破坏终端单元格网格假设（CI 故障根因 C：跨度脏区/滚动
+ *       像素等价全线失败，本地用比例字体对照实验复现同一签名）。
+ */
+static QFont monospaceFont()
+{
+    static const QStringList preferred = {
+        QStringLiteral("DejaVu Sans Mono"), QStringLiteral("Menlo"),
+        QStringLiteral("Consolas"),         QStringLiteral("Courier New"),
+    };
+    QFontDatabase db;
+    const QStringList available = db.families();
+    for (const QString &name : preferred)
+        if (available.contains(name))
+            return QFont(name);
+    for (const QString &name : available)
+        if (db.isFixedPitch(name))
+            return QFont(name);
+    return QFontDatabase::systemFont(QFontDatabase::FixedFont);
+}
+
+/**
  * @brief 构造渲染测试环境：仿真 + 窗口 + 离屏显示组件（24x80，等宽字体，关闪烁保确定性）。
  */
 static void initRenderEnv(Vt102Emulation &emu, ScreenWindow *&win, TerminalDisplay &display)
@@ -51,7 +76,7 @@ static void initRenderEnv(Vt102Emulation &emu, ScreenWindow *&win, TerminalDispl
     emu.setImageSize(24, 80);
     win = emu.createWindow();
     win->setWindowLines(24);
-    display.setVTFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    display.setVTFont(monospaceFont());
     display.setBlinkingCursor(false);
     display.setBlinkingTextEnabled(false);
     display.setScreenWindow(win);
