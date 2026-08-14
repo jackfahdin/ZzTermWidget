@@ -241,6 +241,10 @@ void TestBenchmark::testLigatureRefresh()
     ScreenWindow *win = nullptr;
     TerminalDisplay display;
     initDisplayEnv(emu, win, display);
+    // 本 fork bidi 默认开（TerminalDisplay.cpp），连字拆分路径位于 drawCharacters 的
+    // 非 bidi 分支，不关 bidi 会结构性屏蔽被测路径（拆分计数恒 0，测的是空路径）。
+    // 镜像 tst_rendering.cpp testLigatureSplitPathTaken 的先例。
+    display.setBidiEnabled(false);
     display.setLigaturesEnabled(ligatures);
     QByteArray content;
     for (int i = 0; i < 24; i++)
@@ -250,6 +254,11 @@ void TestBenchmark::testLigatureRefresh()
     QImage image(display.size(), QImage::Format_ARGB32);
     image.fill(Qt::black);
     display.render(&image); // warmup：吃掉 _drawTextTestFlag 一次性度量
+    // 路径命中自检（QBENCHMARK 宏内不可放 QVERIFY，须在宏前断言）：开启连字后拆分
+    // 计数必须为正值，否则本轮测量未走被测路径，数字无效；防被测路径被上游默认
+    // 开关变化再次静默屏蔽后无报警流出。
+    if (ligatures)
+        QVERIFY(display.ligatureSplitFragmentCount() > 0);
     QBENCHMARK {
         display.render(&image);
     }
