@@ -1,5 +1,7 @@
 # 编程连字渲染（可选开关）实现计划
 
+> **作废注记（2026-08-14）：** 本计划任务 2/4 的"条带裁剪重绘同一布局"机制已因 benchmark 实测 614% 开销废弃，最终交付为真实开关语义（QFont::setFeature 禁用/恢复 liga/calt，单次整段绘制）。现行语义以规格 `docs/superpowers/specs/2026-08-14-ligature-rendering-design.md` §7 修订记录为准；本文档保留作决策历史。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
 **目标：** 为 TerminalDisplay 增加可选（默认关，opt-in）的编程连字渲染：ASCII 运算符序列（`->`、`!=`、`==>` 等）在字体具备恰好等宽的连字字形时整段整形绘制（Qt 内建 HarfBuzz 整形自动产出连字字形），否则静默回退现有整段路径；配套跨度脏区扩展（连字序列任一格变脏 → 脏跨度扩到整个序列）与像素等价/回退/互斥/脏区测试。
