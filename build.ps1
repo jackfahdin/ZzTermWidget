@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env pwsh
+#!/usr/bin/env pwsh
 
 param (
     [string]$QtDir = "C:/SoftWare/Qt/6.11.1/mingw_64",
@@ -42,7 +42,7 @@ if ($Help) {
     Write-Host "  ./build.ps1 -SubDir tools/helper -Target HelperTool"
     Write-Host "  ./build.ps1 -Deploy"
     Write-Host "  ./build.ps1 -DeployOnly -DeployDir dist/ZzClipboard_portable"
-    Write-Host "  ./build.ps1 -Compiler msvc -Qt 'C:/SoftWare/Qt/6.7.0/msvc2019_64' -Deploy"
+    Write-Host "  ./build.ps1 -Compiler msvc -Qt 'C:/SoftWare/Qt/6.8.3/msvc2022_64' -Deploy"
     Exit 0
 }
 

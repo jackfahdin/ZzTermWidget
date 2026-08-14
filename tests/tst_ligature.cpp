@@ -94,10 +94,9 @@ void TestLigature::testWidthMatches()
     const QString arrow = QString::fromStdU32String(U"->");
     const qreal shaped = fm.horizontalAdvance(arrow);
     QVERIFY(shaped > 0);
-    int cellWidth = qRound(shaped / 2);
-    // 极端字体下 shaped/2 可能恰在半像素点，qRound 后超容差则向容差内收敛
-    while (cellWidth > 1 && qAbs(shaped - 2.0 * cellWidth) > 0.5)
-        --cellWidth;
+    // qRound 已给出最近整数格宽；若此时仍超容差（如每格步进恰为 X.5px 的字体），
+    // 则不存在满足容差的整数格宽，直接显式红（不做不可收敛的扫描）
+    const int cellWidth = qRound(shaped / 2);
     QVERIFY(qAbs(shaped - 2.0 * cellWidth) <= 0.5);
     QVERIFY(LigatureHelper::widthMatches(fm, U"->", cellWidth));
     // 期望宽每格 +1px：2 格串差 2px，超出 ±0.5px 容差
