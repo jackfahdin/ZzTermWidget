@@ -956,9 +956,21 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
     const bool useOverline = style->rendition & RE_OVERLINE || font().overline();
 
     QFont font = painter.font();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
+    // 连字真实开关语义：关闭 = 在字体上显式禁用 liga/calt 整形特性；开启 = 不设
+    // 特性，沿用字体默认整形（HarfBuzz 默认启用 liga/calt，等宽连字字体自然产出
+    // 连字字形）。特性差异与样式属性差异一样触发 setFont；常态（开关状态未变且
+    // 样式一致）下 isFeatureSet 判定与开关相符，不会引入无谓的 setFont。
+    // Qt < 6.7 无 QFont::setFeature：关侧退化为现状行为（连字仍由字体默认整形
+    // 决定，无法显式禁用），仅注释声明。
+    const bool ligatureFeatureMismatch =
+            font.isFeatureSet(QFont::Tag("liga")) == _ligaturesEnabled;
+#else
+    constexpr bool ligatureFeatureMismatch = false;
+#endif
     if (font.bold() != useBold || font.underline() != useUnderline ||
             font.italic() != useItalic || font.strikeOut() != useStrikeOut ||
-            font.overline() != useOverline) {
+            font.overline() != useOverline || ligatureFeatureMismatch) {
 #if !defined(Q_OS_WIN)
         font.setBold(useBold);
 #endif
@@ -966,6 +978,16 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
         font.setItalic(useItalic);
         font.setStrikeOut(useStrikeOut);
         font.setOverline(useOverline);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
+        if (_ligaturesEnabled) {
+            // 开侧：清除可能残留的禁用特性，恢复字体默认整形
+            font.unsetFeature(QFont::Tag("liga"));
+            font.unsetFeature(QFont::Tag("calt"));
+        } else {
+            font.setFeature(QFont::Tag("liga"), 0);
+            font.setFeature(QFont::Tag("calt"), 0);
+        }
+#endif
         painter.setFont(font);
     }
 
@@ -1087,16 +1109,11 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
                                     QString::fromStdU32String(text));
                 }
             } else {
-                // 连字拆分（opt-in）：仅默认非 bidi、非 #33 修复路径生效——
-                // bidi 由分支结构互斥；#33 修复开关显式判断互斥（其分支条件含
-                // 宽度不一致判定，ASCII 运算符串挡不住，规格 §3.4 三开关两两不叠加）。
-                // drawLigatureSpans 返回 false 时回退现有整段绘制，逐字节同现状
-                if (!(_ligaturesEnabled && !_fix_quardCRT_issue33)
-                        || !drawLigatureSpans(painter, rect, text)) {
-                    QRect drawRect(rect.topLeft(), rect.size());
-                    drawRect.setHeight(rect.height() + _drawTextAdditionHeight);
-                    painter.drawText(drawRect, Qt::AlignBottom, LTR_OVERRIDE_CHAR + QString::fromStdU32String(text));
-                }
+                // 连字生效与否由字体特性控制（见上方字体调整块），绘制调用本身
+                // 两条路径统一为单次整段 drawText
+                QRect drawRect(rect.topLeft(), rect.size());
+                drawRect.setHeight(rect.height() + _drawTextAdditionHeight);
+                painter.drawText(drawRect, Qt::AlignBottom, LTR_OVERRIDE_CHAR + QString::fromStdU32String(text));
             }
         }
     }
@@ -1105,78 +1122,6 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
     // color 为上方解析的片段实际文本色（含光标反色），作 DEFAULT 下划线色的回落
     if (styledUnderline)
         drawStyledUnderline(painter, rect, style, color);
-}
-
-bool TerminalDisplay::drawLigatureSpans(QPainter &painter, const QRect &rect,
-                                        const std::u32string &text) {
-    // 逐格等宽前提：字符数 × 格宽 == 片段宽。宽字符/扩展字符序列/双宽行混入时
-    // 字符数 ≠ 格数，子区间 x 坐标无法按格定位，整体回退整段绘制
-    if (text.size() < 2 || int(text.size()) * _fontWidth != rect.width())
-        return false;
-    // 字符掩码预扫描（O(n) 查表）：无候选段即回退，无字体度量开销
-    const QVector<LigatureHelper::Span> candidates =
-            LigatureHelper::findCandidateSpans(text);
-    if (candidates.isEmpty())
-        return false;
-    // 整形宽度校验：只保留"整形后总宽不变"的子区间（等宽连字字形或逐字回退
-    // 均满足；非严格等宽字体误判的代价仅是整段绘制，与现状行为相同，
-    // 不产生新故障模式）。结果不跨帧缓存，字体切换后自动失效
-    const QFontMetricsF fm(painter.font());
-    QVector<LigatureHelper::Span> spans;
-    for (const LigatureHelper::Span &span : candidates) {
-        if (LigatureHelper::widthMatches(
-                    fm, text.substr(span.start, span.length), _fontWidth))
-            spans.append(span);
-    }
-    if (spans.isEmpty())
-        return false;
-
-    // 拆分绘制：按"普通子区间 + 连字子区间"的格边界把片段切成竖条，每条带都以
-    // 与回退分支完全相同的参数（同一字符串、同一矩形、LTR 覆盖字符 + AlignBottom +
-    // _drawTextAdditionHeight 加高）重绘整段文本，仅在条带边界处裁剪。各条带互
-    // 不重叠且并集覆盖整个平面（首/末条带向外扩展，不截断越界墨迹），任一像素恰
-    // 被绘制一次——输出与整段绘制逐像素相等由构造保证（规格 §3.7），不依赖各平台
-    // Qt 文本布局细节。实测：子串独立 drawText 会产生亚像素级字形覆盖率抖动
-    // （DejaVu Sans Mono 深浅配色下 6 像素 ≤4 级灰度差），故不采用子串拆绘；
-    // LTR 覆盖字符位于串首，不阻断后续字符的 liga/calt 整形（Fira Code 实测
-    // 连字照常生成）
-    const QString full = LTR_OVERRIDE_CHAR + QString::fromStdU32String(text);
-    QRect drawRect(rect.topLeft(), rect.size());
-    drawRect.setHeight(rect.height() + _drawTextAdditionHeight);
-    // 条带竖向范围：上下各扩 1000px，等效不裁剪（斜体越界墨迹不受影响）；
-    // 既有的 paintEvent 区域裁剪经 IntersectClip 保留
-    const int stripTop = rect.top() - 1000;
-    const int stripHeight = rect.height() + 2000;
-    const int hExt = rect.width() + 1000;
-    const auto drawStrip = [&](int clipLeft, int clipRight) {
-        painter.save();
-        painter.setClipRect(QRect(clipLeft, stripTop, clipRight - clipLeft, stripHeight),
-                            Qt::IntersectClip);
-        painter.drawText(drawRect, Qt::AlignBottom, full);
-        painter.restore();
-    };
-    // 子区间格边界序列（普通/连字交替）；首末条带外缘向外扩展，避免截断
-    // 片段端部的越界墨迹（如末格斜体字形），保证与整段绘制逐像素一致
-    QVector<QPair<int, int>> pieces; // (起始格, 结束格)
-    int pos = 0;
-    for (const LigatureHelper::Span &span : spans) {
-        if (span.start > pos)
-            pieces.append({pos, span.start});
-        pieces.append({span.start, span.start + span.length});
-        pos = span.start + span.length;
-    }
-    if (pos < int(text.size()))
-        pieces.append({pos, int(text.size())});
-    for (int i = 0; i < pieces.size(); i++) {
-        const int left = (i == 0) ? rect.x() - hExt
-                                  : rect.x() + pieces[i].first * _fontWidth;
-        const int right = (i == pieces.size() - 1)
-                                  ? rect.x() + rect.width() + hExt
-                                  : rect.x() + pieces[i].second * _fontWidth;
-        drawStrip(left, right);
-    }
-    ++_ligatureSplitFragments; // 测试观测钩子：拆分路径确已执行
-    return true;
 }
 
 void TerminalDisplay::drawStyledUnderline(QPainter &painter, const QRect &rect,

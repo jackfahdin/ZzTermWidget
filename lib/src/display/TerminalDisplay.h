@@ -435,10 +435,15 @@ public:
 
     /**
      * @brief 开关编程连字渲染。
-     * @param enabled true = ASCII 运算符序列在字体具备恰好等宽的连字字形时
-     *        整段整形绘制；false = 现有整段路径（默认，opt-in）。
-     * @note 值变化时触发全量重绘（不做局部刷新优化）。与 bidi、quardCRT #33
-     *       修复两开关两两互斥：任一开启时连字不生效（规格 §3.4）。
+     * @param enabled true = 不设字体特性，沿用字体默认整形（HarfBuzz 默认启用
+     *        liga/calt），等宽连字字体下 ASCII 运算符序列自然产出连字字形；
+     *        false = 在绘制字体上显式 setFeature 禁用 liga/calt 特性（默认关，opt-in）。
+     * @note 值变化时触发全量重绘（不做局部刷新优化）。Qt ≥ 6.7 起关侧为真实禁用；
+     *       Qt < 6.7 无 QFont::setFeature，关侧退化为现状行为（连字仍由字体默认
+     *       整形决定）。与 bidi 不再互斥：bidi 路径同为单次整段绘制，开时同样
+     *       产出连字。quardCRT #33 修复开关也不抑制连字：等宽字体下宽度不一致
+     *       字符被片段聚合隔离为单字符片段，#33 逐字路径结构性只作用于孤立字符，
+     *       连字序列恒走整段路径（其逐字绘制整形上下文为单字符，本身无连字）。
      *       内部接口，不进公共头 qtermwidget.h。
      */
     void setLigaturesEnabled(bool enabled) {
@@ -466,15 +471,6 @@ public:
      *       内部接口，不进公共头 qtermwidget.h。
      */
     QRegion lastDirtyRegion() const { return _lastDirtyRegion; }
-
-    /**
-     * @brief 连字拆分绘制累计执行次数。
-     * @return 自组件创建起 drawLigatureSpans() 实际完成拆分绘制的片段数。
-     * @note 测试观测钩子：无连字字体时拆分绘制与整段绘制逐像素一致、无可观测
-     *       行为差异，以此证明拆分路径真正执行（镜像 _drawTextTestFlag 的
-     *       内部观测点惯例）；内部接口，不进公共头 qtermwidget.h。
-     */
-    int ligatureSplitFragmentCount() const { return _ligatureSplitFragments; }
 
     /**
      * Sets the terminal screen section which is displayed in this widget.
@@ -859,18 +855,6 @@ private:
      */
     void drawStyledUnderline(QPainter &painter, const QRect &rect, const Character *style,
                              const QColor &fallbackColor);
-    /**
-     * @brief 连字拆分绘制：按"连字子区间 + 普通子区间"的格边界把片段切成竖条，
-     *        每条带以与整段绘制完全相同的参数（同一字符串、同一矩形）裁剪重绘。
-     * @param painter 画具（字体/画笔已按片段样式就位）。
-     * @param rect 片段格矩形。
-     * @param text 片段文本。
-     * @return true = 已按拆分条带完成绘制（输出与整段绘制逐像素相等，连字字体下
-     *         连字字形照常生成）；false = 无可拆分区间、逐格等宽前提不满足或宽度
-     *         校验失败，调用方须回退现有整段绘制。
-     */
-    bool drawLigatureSpans(QPainter &painter, const QRect &rect,
-                           const std::u32string &text);
     // draws a string of line graphics
     void drawLineCharString(QPainter& painter, int x, int y,
                             const std::u32string& str, const Character* attributes) const;
@@ -1014,7 +998,6 @@ private:
     Screen *_lastImageScreen = nullptr;
     /** @brief 快路径累计命中帧数；scrollFastPathFrameCount() 测试钩子用。 */
     int _scrollFastPathFrames = 0;
-    int _ligatureSplitFragments = 0; ///< 连字拆分绘制累计执行次数（测试观测钩子用）
 
     ColorEntry _colorTable[TABLE_COLORS];
 
@@ -1142,7 +1125,7 @@ private:
     QWidget *messageParentWidget = nullptr;
 
     bool _fix_quardCRT_issue33 = false;
-    bool _ligaturesEnabled = false; ///< 编程连字渲染开关（默认关，opt-in）
+    bool _ligaturesEnabled = false; ///< 编程连字渲染开关（默认关，opt-in；关=禁用 liga/calt 特性）
 };
 
 class AutoScrollHandler : public QObject

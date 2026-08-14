@@ -231,8 +231,9 @@ void TestBenchmark::testLigatureRefresh_data()
  * @note 沿用本套件惯例不设硬性断言（机器差异大）：两行数字人工对比并记入
  *       CHANGELOG，判定口径为规格 §3.6——开启后重绘耗时增量 <10% 为通过；
  *       关闭行同时是"开关关闭零开销"的回归参照（应与既有全量重绘基线无统计学差异）。
- * @note 拆分绘制采用"条带裁剪重绘同一布局"，整形开销 O(片段长 × 条带数)，
- *       "开"行量化的正是这个开销。
+ * @note 新开关语义（2026-08-14 整改）下开/关都是单次整段绘制：开 = 字体默认
+ *       整形，关 = setFeature 禁用 liga/calt（每帧至多一次字体特性设置），
+ *       预期增量 ≈0%。
  */
 void TestBenchmark::testLigatureRefresh()
 {
@@ -241,10 +242,6 @@ void TestBenchmark::testLigatureRefresh()
     ScreenWindow *win = nullptr;
     TerminalDisplay display;
     initDisplayEnv(emu, win, display);
-    // 本 fork bidi 默认开（TerminalDisplay.cpp），连字拆分路径位于 drawCharacters 的
-    // 非 bidi 分支，不关 bidi 会结构性屏蔽被测路径（拆分计数恒 0，测的是空路径）。
-    // 镜像 tst_rendering.cpp testLigatureSplitPathTaken 的先例。
-    display.setBidiEnabled(false);
     display.setLigaturesEnabled(ligatures);
     QByteArray content;
     for (int i = 0; i < 24; i++)
@@ -254,11 +251,6 @@ void TestBenchmark::testLigatureRefresh()
     QImage image(display.size(), QImage::Format_ARGB32);
     image.fill(Qt::black);
     display.render(&image); // warmup：吃掉 _drawTextTestFlag 一次性度量
-    // 路径命中自检（QBENCHMARK 宏内不可放 QVERIFY，须在宏前断言）：开启连字后拆分
-    // 计数必须为正值，否则本轮测量未走被测路径，数字无效；防被测路径被上游默认
-    // 开关变化再次静默屏蔽后无报警流出。
-    if (ligatures)
-        QVERIFY(display.ligatureSplitFragmentCount() > 0);
     QBENCHMARK {
         display.render(&image);
     }
