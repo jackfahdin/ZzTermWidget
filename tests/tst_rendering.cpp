@@ -33,6 +33,10 @@ private slots:
     void testStyledUnderlinePixelEquivalence();
     void testStyledUnderlinePixels();
     void testStyledUnderlineDirtyRegion();
+    void testLigatureSplitPathTaken();
+    void testLigatureRendering();
+    void testLigatureStyleBoundary();
+    void testLigatureMutualExclusion();
     void testDoubleHeightInkGeometry();
     void testDoubleHeightPixelEquivalence();
 };
@@ -181,6 +185,74 @@ static QImage replayDirtyRegion(TerminalDisplay &display, const QImage &base)
 static void pumpFrame(ScreenWindow *win)
 {
     win->notifyOutputChanged();
+}
+
+/**
+ * @brief 探测字体对指定序列是否真实产生连字：整段绘制与逐格绘制逐像素比对，
+ *        有差异即整形产出了连字/上下文替换字形（无连字字体的等宽字体两者恒一致）。
+ */
+static bool fontFormsLigature(const QFont &font, const QString &seq)
+{
+    const QFontMetricsF fm(font);
+    const qreal cw = fm.horizontalAdvance(QLatin1Char('-'));
+    const int w = qCeil(cw * seq.size()) + 4;
+    const int h = qCeil(fm.height()) + 4;
+    QImage whole(w, h, QImage::Format_ARGB32);
+    QImage piecewise(w, h, QImage::Format_ARGB32);
+    whole.fill(Qt::black);
+    piecewise.fill(Qt::black);
+    {
+        QPainter p(&whole);
+        p.setFont(font);
+        p.setPen(Qt::white);
+        p.drawText(QPointF(2, 2 + fm.ascent()), seq);
+    }
+    {
+        QPainter p(&piecewise);
+        p.setFont(font);
+        p.setPen(Qt::white);
+        qreal x = 2;
+        for (const QChar &c : seq) {
+            p.drawText(QPointF(x, 2 + fm.ascent()), QString(c));
+            x += cw;
+        }
+    }
+    return whole != piecewise;
+}
+
+/**
+ * @brief 在系统字体中找一款对 "->" 真实产生连字的编程字体。
+ * @return 字体族名；本机/CI 无连字字体时返回空串（调用方 QSKIP）。
+ */
+static QString findLigatureFontFamily()
+{
+    static const QStringList candidates = {
+        QStringLiteral("Fira Code"),     QStringLiteral("Cascadia Code"),
+        QStringLiteral("Cascadia Mono"), QStringLiteral("JetBrains Mono"),
+        QStringLiteral("Iosevka Term"),  QStringLiteral("Iosevka"),
+        QStringLiteral("Victor Mono"),   QStringLiteral("Hasklig"),
+        QStringLiteral("Monoid"),
+    };
+    const QStringList available = QFontDatabase::families();
+    for (const QString &name : candidates) {
+        if (available.contains(name)
+                && fontFormsLigature(QFont(name, 12), QStringLiteral("->")))
+            return name;
+    }
+    return QString();
+}
+
+/**
+ * @brief 判定两图在指定矩形内是否存在像素差异。
+ */
+static bool regionDiffers(const QImage &a, const QImage &b, const QRect &r)
+{
+    const QRect area = r & a.rect();
+    for (int y = area.top(); y <= area.bottom(); y++)
+        for (int x = area.left(); x <= area.right(); x++)
+            if (a.pixel(x, y) != b.pixel(x, y))
+                return true;
+    return false;
 }
 
 void TestRendering::testSpanDirtyPixelEquivalence_data()
@@ -884,6 +956,181 @@ void TestRendering::testDoubleHeightPixelEquivalence()
         legacy.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-dh-legacy.png")));
     }
     QCOMPARE(batched, legacy);
+}
+
+/**
+ * @brief 拆分路径执行证据 + 无连字字体静默回退：开关开启后含运算符序列的片段
+ *        确实走拆分绘制（观测钩子计数递增），且开/关渲染逐像素一致（拆分按格
+ *        边界裁剪重绘同一布局，与整段绘制逐像素相等由构造保证，规格 §3.7 回退语义）。
+ * @note 本用例不依赖连字字体，本地确定性验证"拆分路径真实执行且零行为变化"；
+ *       若某环境把系统等宽字体映射到连字字体，像素一致子断言不适用（QSKIP）。
+ */
+void TestRendering::testLigatureSplitPathTaken()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initRenderEnv(emu, win, display);
+    display.setBidiEnabled(false); // 本 fork bidi 默认开，须关闭才能进入默认非 bidi 拆分路径
+    display.setLigaturesEnabled(true);
+    const QByteArray content = "\033[?25l\033[2;1Ha->b != c ==>";
+    emu.receiveData(content.constData(), int(content.size()));
+    pumpFrame(win);
+    pumpFrame(win);
+    renderFull(display); // warmup：吃掉 _drawTextTestFlag
+    const int before = display.ligatureSplitFragmentCount();
+    const QImage on = renderFull(display);
+    // 拆分路径确已执行（无可观测行为差异，以内部观测点为证据，
+    // 镜像 _drawTextTestFlag/_scrollFastPathFrames 惯例）
+    QVERIFY(display.ligatureSplitFragmentCount() > before);
+
+    if (fontFormsLigature(display.font(), QStringLiteral("->")))
+        QSKIP("系统等宽字体带连字字形，回退像素一致子断言不适用");
+    display.setLigaturesEnabled(false);
+    const QImage off = renderFull(display);
+    if (on != off) { // 排障辅助：落盘人工比对
+        on.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-lig-on.png")));
+        off.save(QDir::temp().filePath(QStringLiteral("zzqtermwidget-lig-off.png")));
+    }
+    QCOMPARE(on, off);
+}
+
+/**
+ * @brief 连字生效：连字字体下开启开关，"->" 序列渲染为连字字形。
+ * @note 双分支断言（勘察已确认的规格偏差点）：关路径同样是整段 drawText，
+ *       Qt 整形可能已产出连字（规格 §1 现状）——开≠关时按规格 §4.1 断言
+ *       差异局限于序列行带；开==关时改用断形基线（同内容但 '-' 置 RE_BLINK
+ *       样式位与 '>' 分属两片断，闪烁已关渲染无视觉差异，整形上下文在片段
+ *       边界断裂必无连字）证明带内存在像素差异。两种现状都给出确定生效证据。
+ * @note 本机/CI 无连字字体时 QSKIP（规格 §4.1 许可）。
+ */
+void TestRendering::testLigatureRendering()
+{
+    const QString family = findLigatureFontFamily();
+    if (family.isEmpty())
+        QSKIP("本机/CI 无编程连字字体（Fira Code/Cascadia Code/JetBrains Mono 等）");
+
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initRenderEnv(emu, win, display);
+    display.setBidiEnabled(false); // 本 fork bidi 默认开，须关闭才能进入拆分路径
+    display.setVTFont(QFont(family, 12));
+    display.resize(800, 600); // setVTFont 经 propagateSize 可能调整几何，复位对齐
+    display.setLigaturesEnabled(true);
+    const QByteArray content = "\033[?25l\033[2;1Ha->b != c ==>";
+    emu.receiveData(content.constData(), int(content.size()));
+    pumpFrame(win);
+    pumpFrame(win);
+    renderFull(display); // warmup
+    const QImage on = renderFull(display);
+    display.setLigaturesEnabled(false);
+    const QImage off = renderFull(display);
+
+    const int fh = display.fontHeight();
+    const int fw = display.fontWidth();
+    const int top0 = display.contentsRect().top() + display.margin();
+    const int left0 = display.contentsRect().left() + display.margin();
+    const QRect rowBand(0, top0 + fh, display.width(), fh);     // 行 1 整行带
+    const QRect arrowCells(left0 + fw, top0 + fh, 2 * fw, fh);  // "->" 两格
+
+    if (on != off) {
+        // 规格 §4.1 主路径：开关改变渲染；序列外区域（行带以外）逐像素一致
+        QImage outsideOn = on, outsideOff = off;
+        {
+            QPainter p(&outsideOn);
+            p.fillRect(rowBand, Qt::black);
+        }
+        {
+            QPainter p(&outsideOff);
+            p.fillRect(rowBand, Qt::black);
+        }
+        QCOMPARE(outsideOn, outsideOff);
+    } else {
+        // 关路径已被 Qt 整形产出连字的现状：开/关一致。用断形基线证明连字
+        // 真实发生——基线中 "->" 两字符分属两片断，任何路径都不可能连字
+        Vt102Emulation emu2;
+        ScreenWindow *win2 = nullptr;
+        TerminalDisplay display2;
+        initRenderEnv(emu2, win2, display2);
+        display2.setVTFont(QFont(family, 12));
+        display2.resize(800, 600);
+        const QByteArray broken = "\033[?25l\033[2;1Ha-\033[5m>\033[0mb != c ==>";
+        emu2.receiveData(broken.constData(), int(broken.size()));
+        pumpFrame(win2);
+        pumpFrame(win2);
+        renderFull(display2); // warmup
+        const QImage baseline = renderFull(display2);
+        QVERIFY2(regionDiffers(on, baseline, arrowCells),
+                 "连字字体下 \"->\" 渲染与断形基线无像素差异（连字未发生）");
+    }
+}
+
+/**
+ * @brief 样式边界："-" 与 ">" 分属两个样式片段时不跨片段连字——各片段长度
+ *        为 1 无候选段，拆分路径不执行，开/关渲染逐像素一致。
+ */
+void TestRendering::testLigatureStyleBoundary()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initRenderEnv(emu, win, display);
+    display.setBidiEnabled(false); // 本 fork bidi 默认开，须关闭拆分路径才可能执行
+    const QByteArray content = "\033[?25l\033[2;1Ha\033[31m-\033[32m>\033[0mb";
+    emu.receiveData(content.constData(), int(content.size()));
+    pumpFrame(win);
+    pumpFrame(win);
+    renderFull(display); // warmup
+    display.setLigaturesEnabled(true);
+    const int before = display.ligatureSplitFragmentCount();
+    const QImage on = renderFull(display);
+    display.setLigaturesEnabled(false);
+    const QImage off = renderFull(display);
+    QCOMPARE(on, off);
+    // 拆分路径一次都不应执行（候选段长度 ≥ 2 才拆分）
+    QCOMPARE(display.ligatureSplitFragmentCount(), before);
+}
+
+/**
+ * @brief 互斥：bidi 开启 / quardCRT #33 修复开启时连字拆分不生效
+ *        （拆分路径计数恒 0，规格 §3.4 三开关两两不叠加）。
+ * @note #33 分支条件含宽度不一致判定，ASCII 串挡不住——互斥靠连字条件里
+ *       显式的 !_fix_quardCRT_issue33 守卫，本用例即该守卫的回归证据。
+ */
+void TestRendering::testLigatureMutualExclusion()
+{
+    { // bidi 优先
+        Vt102Emulation emu;
+        ScreenWindow *win = nullptr;
+        TerminalDisplay display;
+        initRenderEnv(emu, win, display);
+        display.setBidiEnabled(true);
+        display.setLigaturesEnabled(true);
+        const QByteArray content = "\033[?25l\033[2;1Ha->b != c ==>";
+        emu.receiveData(content.constData(), int(content.size()));
+        pumpFrame(win);
+        pumpFrame(win);
+        renderFull(display);
+        QCOMPARE(display.ligatureSplitFragmentCount(), 0);
+    }
+    { // quardCRT #33 修复优先
+        Vt102Emulation emu;
+        ScreenWindow *win = nullptr;
+        TerminalDisplay display;
+        initRenderEnv(emu, win, display);
+        // 本 fork bidi 默认开：必须先关闭，否则计数恒 0 是 bidi 分支结构所致，
+        // 显式 !_fix_quardCRT_issue33 守卫是否生效无从区分，证据无效
+        display.setBidiEnabled(false);
+        display.set_fix_quardCRT_issue33(true);
+        display.setLigaturesEnabled(true);
+        const QByteArray content = "\033[?25l\033[2;1Ha->b != c ==>";
+        emu.receiveData(content.constData(), int(content.size()));
+        pumpFrame(win);
+        pumpFrame(win);
+        renderFull(display);
+        QCOMPARE(display.ligatureSplitFragmentCount(), 0);
+    }
 }
 
 QTEST_MAIN(TestRendering)

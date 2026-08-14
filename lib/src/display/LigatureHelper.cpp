@@ -54,5 +54,5 @@ bool LigatureHelper::widthMatches(const QFontMetricsF &fm, const std::u32string 
         return false;
     const qreal shaped = fm.horizontalAdvance(QString::fromStdU32String(text));
     const qreal cells = qreal(text.size()) * cellWidth;
-    return qAbs(shaped - cells) <= 0.5; // 整像素容差（规格 §3.2）
+    return qAbs(shaped - cells) <= 0.5; // 半像素容差（规格 §3.2）
 }

@@ -859,6 +859,18 @@ private:
      */
     void drawStyledUnderline(QPainter &painter, const QRect &rect, const Character *style,
                              const QColor &fallbackColor);
+    /**
+     * @brief 连字拆分绘制：按"连字子区间 + 普通子区间"的格边界把片段切成竖条，
+     *        每条带以与整段绘制完全相同的参数（同一字符串、同一矩形）裁剪重绘。
+     * @param painter 画具（字体/画笔已按片段样式就位）。
+     * @param rect 片段格矩形。
+     * @param text 片段文本。
+     * @return true = 已按拆分条带完成绘制（输出与整段绘制逐像素相等，连字字体下
+     *         连字字形照常生成）；false = 无可拆分区间、逐格等宽前提不满足或宽度
+     *         校验失败，调用方须回退现有整段绘制。
+     */
+    bool drawLigatureSpans(QPainter &painter, const QRect &rect,
+                           const std::u32string &text);
     // draws a string of line graphics
     void drawLineCharString(QPainter& painter, int x, int y,
                             const std::u32string& str, const Character* attributes) const;
