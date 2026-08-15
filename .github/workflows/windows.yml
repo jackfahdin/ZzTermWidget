@@ -73,6 +73,20 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel
 
+      # offscreen 平台下该 Qt 走通用字体库（日志警告 Cannot find font directory），
+      # 无字体可用时所有字符（含空格）渲染为 tofu 方框、字体度量退化，导致依赖
+      # 真实字形/度量的断言假失败。按警告指引部署 DejaVu Sans Mono 到 Qt 字体目录
+      - name: Deploy test font (DejaVu Sans Mono)
+        shell: pwsh
+        run: |
+          $prefix = (qmake -query QT_INSTALL_PREFIX).Trim()
+          $dst = Join-Path $prefix 'lib\fonts'
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          Invoke-WebRequest -Uri https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip -OutFile $env:RUNNER_TEMP\dejavu.zip
+          Expand-Archive $env:RUNNER_TEMP\dejavu.zip -DestinationPath $env:RUNNER_TEMP\dejavu
+          Copy-Item $env:RUNNER_TEMP\dejavu\dejavu-fonts-ttf-2.37\ttf\*.ttf $dst
+          Get-ChildItem $dst
+
       - name: Test
         # QDir::temp() 重定向到 runner.temp：测试断言失败时落盘的对照 PNG 随之集中，便于上传
         env:
