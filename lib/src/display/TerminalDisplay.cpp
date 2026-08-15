@@ -1121,9 +1121,14 @@ void TerminalDisplay::drawStyledUnderline(QPainter &painter, const QRect &rect,
                                           const Character *style,
                                           const QColor &fallbackColor) {
     const QFontMetrics fm = painter.fontMetrics();
-    // 几何与字体下划线同源：基线与文本绘制（rect.y()+_fontAscent+_lineSpacing）一致
-    const qreal y0 = rect.y() + _fontAscent + _lineSpacing + fm.underlinePos();
     const qreal lineWidth = qMax(1, fm.lineWidth()); // 下限 1px
+    // 几何与字体下划线同源：基线与文本绘制（rect.y()+_fontAscent+_lineSpacing）一致。
+    // 钳制在片段 rect 内：极端字体度量（ascent+underlinePos ≥ 行高，Windows CI 实测
+    // 命中）下未钳制的下划线会落到行带下方 1px——增量重绘的脏区按行带计算不覆盖该
+    // 扫描线，编辑后留下陈旧墨迹线（增量与全量渲染不一致的实证根因）；钳制后两条
+    // 绘制路径几何一致。正常度量（Linux DejaVu 等）下钳制恒为无操作，渲染不变。
+    const qreal y0 = qMin(qreal(rect.y() + _fontAscent + _lineSpacing + fm.underlinePos()),
+                          qreal(rect.bottom()) + 1.0 - lineWidth / 2.0);
     const qreal left = rect.left();
     const qreal right = rect.right();
     // DEFAULT 下划线色回落片段实际文本色（含光标反色/选区交换后的颜色）

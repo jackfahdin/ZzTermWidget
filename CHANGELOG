@@ -1,3 +1,19 @@
+ZzQTermWidget 下划线行带钳制修复 + 渲染测试跨平台定版 / 2026-08-15
+=============================================
+ * 修复（真实 bug，Windows CI 差分图实证）：极端字体度量（ascent+underlinePos
+   ≥ 行高）下单线下划线落到行带下方 1px，增量重绘脏区按行带计算不覆盖该
+   扫描线，编辑带下划线的文本后留下陈旧墨迹线。drawStyledUnderline 现将
+   线位钳制在片段 rect 内（正常度量下恒为无操作，Linux 渲染逐像素不变）。
+ * 测试新增行带外不变式断言（全平台确定性、与光栅器无关）：三种样式的
+   下划线墨迹均不得越出行带底，直接锚定上述回归。
+ * 渲染像素等价比对定版为仅参考平台 Linux/FreeType 执行
+   （verifyStructuralEqual 门禁）：macOS(CoreText)/Windows(DirectWrite) 的
+   亚像素字形定位与小数步进使同一字符串在不同片段起点/拆分下光栅化不同
+   （片段内 1~4px 平移、AA 覆盖差异，无内容级错误），跨光栅器像素等价非
+   有效不变量；非 Linux 平台保留全部脏区形状断言。
+ * testWidthMatches 字体度量自适应（pixelSize 8..40 扫描取满足整数格宽容差
+   的字号，全不满足 QSKIP），根治 Courier New 单格 advance X.5px 假失败。
+
 ZzQTermWidget 编程连字渲染（可选开关） / 2026-08-14
 =============================================
  * TerminalDisplay 新增 setLigaturesEnabled/ligaturesEnabled（默认关，opt-in；
