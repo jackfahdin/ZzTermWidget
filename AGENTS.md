@@ -13,11 +13,23 @@ cmake --build build --parallel
 
 Qt 基线版本 6.8+（`find_package` 已强制 6.8；CI 三平台装 6.8.2，本机用 6.11.1）。
 
+CI 两个平台坑（已固化在 workflow，改动测试/CI 前须知）：
+- MSVC job 的 Qt 无可用字体（offscreen 走通用字体库）：所有字符渲染为 tofu、
+  度量退化。`windows.yml` 已在 Test 前把 DejaVu Sans Mono 部署到 Qt `lib/fonts`，
+  勿删该步骤。
+- Windows 上 ctest 捕获不到 QTest 输出：测试目标在 WIN32 下强制控制台子系统，
+  且 QTest 同时写 `build/tests/*-qtest.log`，失败时随 artifact（含渲染对照 PNG
+  `zzqtermwidget-*.png`）上传，排障以下载 artifact 为准。
+
 ## 测试
 
 - 测试位于 `tests/`，使用 Qt 官方 QTest 框架（`Qt6::Test`），无第三方依赖。
 - 选项 `-DZZQTERMWIDGET_BUILD_TESTS=ON`（默认开）；运行：`ctest --test-dir build --output-on-failure`。
 - 新增核心逻辑（解析器、屏幕缓冲、宽度判定等）必须附带回归测试。
+- 渲染像素等价比对（`verifyStructuralEqual`）只在 Linux/FreeType 执行：
+  macOS/Windows 光栅器的亚像素字形定位与小数步进使跨光栅器像素恒等原理上
+  不可达（片段内 1~4px 平移/AA 差异，非缺陷）；非 Linux 平台由脏区形状断言
+  与确定性像素断言（同布局双路径、行带不变式）覆盖。
 
 ## 目录结构
 
