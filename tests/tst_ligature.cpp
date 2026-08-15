@@ -86,20 +86,41 @@ void TestLigature::testFindCandidateSpans()
  *        期望宽人为偏移即超出 0.5px 容差判定失败；空串不可连字。
  * @note 早期版本假设系统等宽字体步进均匀，macOS CI 的 "Monospace" 族缺失
  *       回退到比例字体时不成立（CI 故障根因 B）；现只断言容差逻辑本身。
+ *       Windows Courier New 等字体的单格 advance 恰为 X.5px：qRound(shaped/2)
+ *       与真实半宽差 0.25px，2 格累计误差 0.5px 压线/越线造成假失败（MinGW CI
+ *       实测），故对 pixelSize 8..40 扫描系统 FixedFont，取首个满足整数格宽
+ *       容差的字号做断言；全部字号都不满足则该环境字体度量无法构造整数格宽，
+ *       QSKIP。
  */
 void TestLigature::testWidthMatches()
 {
-    const QFont fixed = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    const QFontMetricsF fm(fixed);
     const QString arrow = QString::fromStdU32String(U"->");
-    const qreal shaped = fm.horizontalAdvance(arrow);
-    QVERIFY(shaped > 0);
-    // qRound 已给出最近整数格宽；若此时仍超容差（如每格步进恰为 X.5px 的字体），
-    // 则不存在满足容差的整数格宽，直接显式红（不做不可收敛的扫描）
-    const int cellWidth = qRound(shaped / 2);
-    QVERIFY(qAbs(shaped - 2.0 * cellWidth) <= 0.5);
-    QVERIFY(LigatureHelper::widthMatches(fm, U"->", cellWidth));
-    // 期望宽每格 +1px：2 格串差 2px，超出 ±0.5px 容差
+    const QFont base = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    QFontMetricsF fm(base);
+    qreal shaped = 0;
+    int cellWidth = 0;
+    int pixelSize = -1;
+    for (int ps = 8; ps <= 40; ps++) {
+        QFont f = base;
+        f.setPixelSize(ps);
+        const QFontMetricsF m(f);
+        const qreal w = m.horizontalAdvance(arrow);
+        const int cw = qRound(w / 2);
+        if (w > 0 && qAbs(w - 2.0 * cw) <= 0.5) {
+            fm = m;
+            shaped = w;
+            cellWidth = cw;
+            pixelSize = ps;
+            break;
+        }
+    }
+    if (pixelSize < 0)
+        QSKIP("系统 FixedFont 在 pixelSize 8..40 内无满足整数格宽容差（±0.5px）的"
+              "字号（如单格 advance 恒为 X.5px 的字体），无法构造宽度校验断言");
+    QVERIFY2(LigatureHelper::widthMatches(fm, U"->", cellWidth),
+             qPrintable(QStringLiteral("pixelSize %1：shaped=%2 与 2×格宽 %3 应在容差内")
+                        .arg(pixelSize).arg(shaped).arg(cellWidth)));
+    // 期望宽每格 +1px：2 格串差 ≥1.5px，超出 ±0.5px 容差
     QVERIFY(!LigatureHelper::widthMatches(fm, U"->", cellWidth + 1));
     QVERIFY(!LigatureHelper::widthMatches(fm, U"", cellWidth));
 }
