@@ -22,6 +22,7 @@
 #include <QDir>
 #include <QMessageBox>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QTranslator>
 #include <QLocale>
 #include <QCoreApplication>
@@ -433,9 +434,13 @@ void QTermWidget::fetchOlderHistory() {
         return;
     }
 
+    // 防重入置位走 RAII：提供者回调抛异常时也能复位，避免取数通道永久闭锁
     m_historyFetching = true;
-    const QStringList texts = m_historyProvider(base, HISTORY_FETCH_LINES);
-    m_historyFetching = false;
+    const auto fetchingGuard = qScopeGuard([this] { m_historyFetching = false; });
+    // 拷贝到局部再调用：回调内若重入 setHistoryProvider()，销毁/替换的是成员本体，
+    // 直接对成员 std::function 发起调用则属未定义行为
+    const auto provider = m_historyProvider;
+    const QStringList texts = provider(base, HISTORY_FETCH_LINES);
 
     if (texts.isEmpty()) {
         m_historyProviderExhausted = true;

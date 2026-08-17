@@ -616,7 +616,8 @@ void TestHistoryReadback::testPrepend100kLinesPerf()
     const QJsonObject details {
         { QStringLiteral("description"),
           QStringLiteral("Screen::prependHistoryLines 前插注入 100000 行"
-                         "（200 批 × 500 行，40 列，与生产越顶取数同形态）") },
+                         "（200 批 × 500 行，40 列，与生产越顶取数同形态；"
+                         "计时不含生产路径的 QString→UCS-4 转换段）") },
         { QStringLiteral("batches"), 200 },
         { QStringLiteral("linesPerBatch"), 500 },
         { QStringLiteral("columns"), 40 },

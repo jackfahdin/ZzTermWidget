@@ -314,14 +314,15 @@ void HistoryScrollBuffer::addLine(bool previousWrapped) {
 
 int HistoryScrollBuffer::prependLines(const QVector<QVector<Character>> &lines,
                                       const QVector<bool> &wrappedFlags) {
-    Q_ASSERT(lines.size() == wrappedFlags.size());
+    // 防御：lines 与 wrappedFlags 不等长时按较短者截断（上层 Screen 已截断，此处兜底）
+    const int count = qMin(lines.size(), wrappedFlags.size());
 
     // 剩余容量不足时保留输入中较新的行（紧邻既有历史，不产生索引空洞）；
     // 被丢弃的最老行由上层日志引擎兜底持有，用户再次越顶时可重新读回
     const int room = qMax(0, _maxLineCount - static_cast<int>(_prepended.size()));
-    const int n = qMin(static_cast<int>(lines.size()), room);
-    const int skip = lines.size() - n; // 输入中最老的 skip 行不入缓冲
-    for (int i = lines.size() - 1; i >= skip; i--) {
+    const int n = qMin(count, room);
+    const int skip = count - n; // 输入中最老的 skip 行不入缓冲
+    for (int i = count - 1; i >= skip; i--) {
         _prepended.push_front(lines[i]);
         _prependedWrapped.push_front(wrappedFlags[i]);
     }

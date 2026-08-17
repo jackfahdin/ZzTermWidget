@@ -133,6 +133,8 @@ public:
      *       （ZzLogEngine 热层/温层读取为微秒级，满足该约束）。
      * @note 提供者返回空、或历史前插区已满（回看深度达内存历史上限）后标记"耗尽"，
      *       不再重复调用；setHistoryProvider() 与 clearScrollback() 重置该标记。
+     * @note 契约：禁止在提供者回调内重入 setHistoryProvider()/fetchOlderHistory()
+     *       （实现已做局部拷贝与防重入置位，回调内更换提供者本次取数不生效）。
      */
     void setHistoryProvider(std::function<QStringList(qint64 beforeLine, int maxLines)> provider);
 
