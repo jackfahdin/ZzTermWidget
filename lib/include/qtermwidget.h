@@ -22,6 +22,7 @@
 #include <QWidget>
 #include <QClipboard>
 #include <QTimer>
+#include <functional>
 #include "Emulation.h"
 #include "Filter.h"
 
@@ -115,6 +116,25 @@ public:
 
     // Returns the history size (in lines)
     int historySize() const;
+
+    /**
+     * @brief 设置滚动历史读回提供者（ZzClawTerm 规格 §5.4 读回路径）。
+     *
+     * @param provider 回调函数；滚动条到达顶端（含滚轮越顶）时在 GUI 线程同步调用：
+     *        - beforeLine：当前内存历史最老一行的绝对行号（会话累计口径）；
+     *        - maxLines：本次最多请求的行数（当前固定为 500）；
+     *        - 返回值：绝对行号 [beforeLine - n, beforeLine) 的行文本，旧→新顺序，
+     *          不含换行符；无更老数据时返回空列表。
+     *        传空 std::function 清除提供者。
+     *
+     * @note 注入的行经 QString::toUcs4() 进入 char32_t 字符管线，使用默认字符属性
+     *       （与 dupDisplayOutput 的纯文本口径一致；颜色/样式不随读回恢复）。
+     * @note 提供者在滚动事件处理中被同步调用，必须毫秒级返回
+     *       （ZzLogEngine 热层/温层读取为微秒级，满足该约束）。
+     * @note 提供者返回空、或历史前插区已满（回看深度达内存历史上限）后标记"耗尽"，
+     *       不再重复调用；setHistoryProvider() 与 clearScrollback() 重置该标记。
+     */
+    void setHistoryProvider(std::function<QStringList(qint64 beforeLine, int maxLines)> provider);
 
     /**
      * @brief 设置是否允许 OSC 52 序列访问本地剪贴板（默认允许）。
@@ -378,6 +398,8 @@ private:
         QColor color;
         RegExpFilter *regExpFilter;
     };
+    /** @brief 滚动越顶时向历史提供者同步取数并注入显示层（耗尽/重入保护内建）。 */
+    void fetchOlderHistory();
     void search(bool forwards, bool next);
     int setZoom(int step);
     QWidget *messageParentWidget = nullptr;
@@ -395,6 +417,10 @@ private:
     bool m_monitorActivity = false;
     bool m_monitorSilence = false;
     bool m_notifiedActivity = false;
+    std::function<QStringList(qint64, int)> m_historyProvider; ///< 历史读回提供者（空 = 未设置）
+    bool m_historyProviderExhausted = false; ///< 提供者返回空或前插区满后置位，避免滚动事件反复空转
+    bool m_historyFetching = false;          ///< 防重入：提供者回调期间不再触发取数
+    static constexpr int HISTORY_FETCH_LINES = 500; ///< 单次越顶读回的行数
     QTimer* m_monitorTimer = nullptr;
     int m_silenceSeconds = 10;
 

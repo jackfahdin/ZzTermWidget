@@ -1,4 +1,6 @@
 #include <QtTest>
+#include <QScrollBar>
+#include "qtermwidget.h"
 #include "History.h"
 #include "Character.h"
 #include "Screen.h"
@@ -24,6 +26,8 @@ private slots:
     void testPrependDropPopsParallelTableAtRightIndex();
     void testPrependWrappedFlagsLengthMismatch();
     void testEmulationPrependForward();
+    void testWidgetFetchOlderOnScrollTop();
+    void testProviderEmptyMarksExhausted();
 };
 
 /**
@@ -323,6 +327,87 @@ void TestHistoryReadback::testEmulationPrependForward()
     QCOMPARE(emu.prependHistoryLines(older, wrapped), 9);
     QCOMPARE(emu.lineCount(), 61);
     QCOMPARE(emu.historyBaseLine(), qint64(0)); // 注入量恰等于丢行量，base 归零
+}
+
+/**
+ * @brief 部件级端到端：滚动条越顶触发提供者回调，读回行前插入历史，视图保持稳定。
+ */
+void TestHistoryReadback::testWidgetFetchOlderOnScrollTop()
+{
+    QTermWidget term(nullptr, nullptr);
+    term.setHistorySize(50);
+    QStringList allLines;
+    QByteArray payload;
+    for (int i = 0; i < 200; i++) {
+        allLines << QString("line %1").arg(i);
+        payload += "line " + QByteArray::number(i) + "\r\n";
+    }
+    term.recvData(payload.constData(), int(payload.size()));
+    // 输出变更经攒帧定时器刷新，无事件循环需显式等待
+    QTest::qWait(60);
+    QCoreApplication::processEvents();
+    QCOMPARE(term.historyLinesCount(), 50); // 内存历史封顶
+
+    QVector<qint64> requestedBefore;
+    term.setHistoryProvider([&](qint64 beforeLine, int maxLines) -> QStringList {
+        requestedBefore << beforeLine;
+        QStringList out;
+        for (qint64 id = qMax<qint64>(0, beforeLine - maxLines); id < beforeLine; id++)
+            out << allLines.at(int(id));
+        return out;
+    });
+
+    QScrollBar *bar = term.findChild<QScrollBar *>();
+    QVERIFY(bar);
+    QVERIFY(bar->maximum() > 0); // 攒帧刷新后滚动条范围就位
+
+    bar->setValue(0); // 越顶触发读回
+    QCOMPARE(requestedBefore.size(), 1);
+    QVERIFY(requestedBefore[0] > 0);
+    // 前插区容量同内存历史上限（50）：合计 100；视图稳定 = 当前行下移 n
+    QCOMPARE(term.historyLinesCount(), 100);
+    QCOMPARE(bar->value(), 50);
+    QCOMPARE(bar->maximum(), 100);
+
+    // 再次越顶：前插区已满，注入 0 行并标记耗尽；beforeLine 已随首次前插回退 50
+    bar->setValue(0);
+    QCOMPARE(requestedBefore.size(), 2);
+    QCOMPARE(requestedBefore[1], requestedBefore[0] - 50);
+    QCOMPARE(term.historyLinesCount(), 100);
+
+    // 耗尽后不再打扰提供者
+    bar->setValue(50);
+    bar->setValue(0);
+    QCOMPARE(requestedBefore.size(), 2);
+}
+
+/**
+ * @brief 提供者返回空列表即标记耗尽，后续越顶不再回调。
+ */
+void TestHistoryReadback::testProviderEmptyMarksExhausted()
+{
+    QTermWidget term(nullptr, nullptr);
+    term.setHistorySize(10);
+    QByteArray payload;
+    for (int i = 0; i < 50; i++)
+        payload += "line " + QByteArray::number(i) + "\r\n";
+    term.recvData(payload.constData(), int(payload.size()));
+    QTest::qWait(60);
+    QCoreApplication::processEvents();
+
+    int calls = 0;
+    term.setHistoryProvider([&](qint64, int) -> QStringList {
+        calls++;
+        return {};
+    });
+
+    QScrollBar *bar = term.findChild<QScrollBar *>();
+    QVERIFY(bar);
+    bar->setValue(0);
+    QCOMPARE(calls, 1);
+    bar->setValue(5);
+    bar->setValue(0);
+    QCOMPARE(calls, 1); // 已耗尽，不再回调
 }
 
 QTEST_MAIN(TestHistoryReadback)

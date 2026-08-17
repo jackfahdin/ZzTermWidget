@@ -517,6 +517,12 @@ public slots:
      */
     void updateImage();
 
+    /**
+     * @brief 历史前插 n 行后同步视图：窗口当前行下移 n 保持可视内容稳定，并刷新滚动条与图像。
+     * @param n 实际前插的行数（<=0 时不动作）。
+     */
+    void scrollAfterHistoryPrepend(int n);
+
     /** Essentially calls processFilters().
      */
     void updateFilters();
@@ -680,6 +686,14 @@ signals:
     void changedFontMetricSignal(int height, int width);
     void changedContentSizeSignal(int height, int width);
     void changedContentCountSignal(int line, int column);
+
+    /**
+     * @brief 滚动条到达顶端（正在查看内存历史最老行）时发出。
+     * @note 历史读回注入的触发口：QTermWidget 挂接此信号向外部提供者索取更老的行；
+     *       滚轮路径经 QScrollBar::event 转发汇入同一槽，同样触发；
+     *       键盘滚动路径（ScreenWindow::handleCommandFromKeyboard）v0.1 不触发。
+     */
+    void historyTopReached();
 
     /**
      * Emitted when the user right clicks on the display, or right-clicks with the Shift

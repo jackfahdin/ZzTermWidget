@@ -2807,6 +2807,19 @@ void TerminalDisplay::scrollBarPositionChanged(int) {
     _screenWindow->setTrackOutput(atEndOfOutput);
 
     updateImage();
+
+    // 到达顶端：通知上层按需读回更老的历史行（无提供者或已耗尽时 QTermWidget 侧直接忽略）
+    if (_scrollBar->value() == 0 && _scrollBar->maximum() > 0)
+        emit historyTopReached();
+}
+
+void TerminalDisplay::scrollAfterHistoryPrepend(int n) {
+    if (!_screenWindow || n <= 0)
+        return;
+    // 前插使历史行索引整体上移 n：窗口同步下移保持可视内容稳定；
+    // scrollTo 内部的 qBound 钳制保证不越界，updateImage 经 setScroll 回写滚动条
+    _screenWindow->scrollTo(_screenWindow->currentLine() + n);
+    updateImage();
 }
 
 void TerminalDisplay::setScroll(int cursor, int slines) {

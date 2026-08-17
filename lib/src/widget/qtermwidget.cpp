@@ -147,6 +147,10 @@ QTermWidget::QTermWidget(QWidget *msgParent, QWidget *parent)
         emit sendData(buff, len);
     });
     connect( m_emulation, &Emulation::dupDisplayOutput, this, &QTermWidget::dupDisplayOutput);
+    // 滚动越顶（含滚轮路径）→ 向历史提供者读回更老的行注入显示层
+    connect(m_terminalDisplay, &TerminalDisplay::historyTopReached, this, [this]() {
+        fetchOlderHistory();
+    });
     connect( m_emulation, &Emulation::changeTabTextColorRequest, this, &QTermWidget::changeTabTextColorRequest);
     connect( m_emulation, &Emulation::cursorChanged, this, &QTermWidget::cursorChanged);
 
@@ -413,6 +417,58 @@ int QTermWidget::historySize() const {
      }
 }
 
+void QTermWidget::setHistoryProvider(std::function<QStringList(qint64 beforeLine, int maxLines)> provider) {
+    m_historyProvider = std::move(provider);
+    m_historyProviderExhausted = false;
+}
+
+void QTermWidget::fetchOlderHistory() {
+    if (!m_historyProvider || m_historyProviderExhausted || m_historyFetching)
+        return;
+
+    const qint64 base = m_emulation->historyBaseLine();
+    if (base <= 0) {
+        // 内存历史已含会话全部输出（或提供者误用注入了超量行），无更老行可读
+        m_historyProviderExhausted = true;
+        return;
+    }
+
+    m_historyFetching = true;
+    const QStringList texts = m_historyProvider(base, HISTORY_FETCH_LINES);
+    m_historyFetching = false;
+
+    if (texts.isEmpty()) {
+        m_historyProviderExhausted = true;
+        return;
+    }
+
+    // QString → UCS-4 → Character（默认属性）：与 receiveData / dupDisplayCharacter
+    // 同一 char32_t 字符管线；读回行的折行关系不可知，统一按非折行整行处理
+    QVector<QVector<Character>> lines;
+    QVector<bool> wrapped;
+    lines.reserve(texts.size());
+    wrapped.reserve(texts.size());
+    for (const QString &text : texts) {
+        const QVector<uint> ucs4 = text.toUcs4();
+        QVector<Character> line;
+        line.reserve(ucs4.size());
+        for (const char32_t c : ucs4)
+            line.append(Character(c));
+        lines.append(std::move(line));
+        wrapped.append(false);
+    }
+
+    const int n = m_emulation->prependHistoryLines(lines, wrapped);
+    if (n <= 0) {
+        // 底层滚动类型不支持前插，或前插区已满（回看深度达内存历史上限）：
+        // 两种结局都无法再注入，标记耗尽终止滚动事件空转
+        m_historyProviderExhausted = true;
+        return;
+    }
+
+    m_terminalDisplay->scrollAfterHistoryPrepend(n);
+}
+
 void QTermWidget::setOsc52Enabled(bool enabled) {
     m_emulation->setOsc52Enabled(enabled);
 }
@@ -600,6 +656,7 @@ void QTermWidget::clear() {
 
 void QTermWidget::clearScrollback() {
     m_emulation->clearHistory();
+    m_historyProviderExhausted = false; // 历史清空后允许提供者重新应答
 }
 
 void QTermWidget::clearScreen() {
