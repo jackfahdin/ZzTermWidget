@@ -2081,10 +2081,11 @@ void Screen::setScroll(const HistoryType &t, bool copyPreviousScroll) {
 
             // 绝对行号基线只随前端丢弃前进（尾部丢弃不影响最老在内存行的行号）
             _historyBase += frontDropped;
-            // 前插区可能被缩容清空：按实际前插行数复位记账标志，
-            // 否则后续 addHistLine 满员丢行时基线记账条件失效
-            _hasPrependedLines = history->prependedLineCount() > 0;
         }
+        // 记账标志无条件按实际前插行数重算：buffer→file 换型全量保留（无丢行）时
+        // 前插行融入文件型历史，prependedLineCount() 归零，标志若残留 true 会导致
+        // 后续满员丢行时基线前进条件失效（_historyBase 停滞，提供者重复回传注入）
+        _hasPrependedLines = history->prependedLineCount() > 0;
     } else {
         HistoryScroll *oldScroll = history;
         history = t.scroll(nullptr);

@@ -33,6 +33,7 @@ private slots:
     void testPrependKeepsHyperlinkAlignment();
     void testPrependDropPopsParallelTableAtRightIndex();
     void testShrinkAfterReadbackSyncsParallelTables();
+    void testBufferFileBufferRetypeResetsPrependedFlag();
     void testPrependWrappedFlagsLengthMismatch();
     void testEmulationPrependForward();
     void testWidgetFetchOlderOnScrollTop();
@@ -363,6 +364,62 @@ void TestHistoryReadback::testShrinkAfterReadbackSyncsParallelTables()
     for (int i = 0; i < screen.getHistLines(); i++)
         QVERIFY2(screen.hyperlinkAt(i, 0).isEmpty(),
                  qPrintable(QStringLiteral("history line %1 仍持有已丢弃行的链接").arg(i)));
+}
+
+/**
+ * @brief buffer→file→buffer 换型（全程无丢行）后 _hasPrependedLines 必须复位：
+ *        前插行融入文件型历史后前插区已不存在，标志残留会导致此后环形区满员
+ *        丢行时基线前进条件失效（_historyBase 停滞，提供者重复回传注入）。
+ */
+void TestHistoryReadback::testBufferFileBufferRetypeResetsPrependedFlag()
+{
+    Screen screen(2, 80);
+    screen.setScroll(HistoryTypeBuffer(5));
+    // LNM 模式使 newLine 兼作回车（newLine 本体仅是换行，不回列），
+    // 保证逐行喂入的文本都从第 0 列开始
+    screen.setMode(MODE_NewLine);
+
+    // 喂 7 行：L0..L5 滚入历史（环形区封顶 5，保留 L1..L5），L6 留屏
+    for (int i = 0; i < 7; i++) {
+        for (const char32_t c : QString("L%1").arg(i).toUcs4())
+            screen.displayCharacter(c);
+        screen.newLine();
+    }
+    QCOMPARE(screen.getHistLines(), 5);
+    QCOMPARE(screen.historyBaseLine(), qint64(1));
+
+    // 读回前插 1 行（绝对行号 0）：基线回退归零，前插记账标志置位
+    const QVector<QVector<Character>> older = { { Character(U'p') } };
+    const QVector<bool> wrapped = { false };
+    QCOMPARE(screen.prependHistoryLines(older, wrapped), 1);
+    QCOMPARE(screen.getHistLines(), 6);
+    QCOMPARE(screen.historyBaseLine(), qint64(0));
+
+    // buffer→file→buffer 换型：两条路径均全量保留（无丢行），
+    // 前插行融入普通历史，前插区不复存在
+    screen.setScroll(HistoryTypeFile());
+    QCOMPARE(screen.getHistLines(), 6);
+    QCOMPARE(screen.historyBaseLine(), qint64(0));
+    screen.setScroll(HistoryTypeBuffer(10)); // 容量足够，仍无丢行
+    QCOMPARE(screen.getHistLines(), 6);
+    QCOMPARE(screen.historyBaseLine(), qint64(0));
+
+    // 喂 6 行：6 次滚入历史（光标已触底，4 行填满到 10，随后 2 次满员覆盖
+    // 依次丢弃最老行 p 与 L1）
+    for (int i = 0; i < 6; i++) {
+        for (const char32_t c : QString("M%1").arg(i).toUcs4())
+            screen.displayCharacter(c);
+        screen.newLine();
+    }
+    QCOMPARE(screen.getHistLines(), 10);
+    // 前插区已不存在，满员丢行须恢复基线记账：p、L1（绝对行号 0、1）永久离开内存
+    QCOMPARE(screen.historyBaseLine(), qint64(2));
+
+    // 再喂 1 行：再丢 L2，基线继续前进
+    for (const char32_t c : QStringLiteral("M6").toUcs4())
+        screen.displayCharacter(c);
+    screen.newLine();
+    QCOMPARE(screen.historyBaseLine(), qint64(3));
 }
 
 /**

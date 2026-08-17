@@ -10,7 +10,7 @@
         "buildType": "Release",
         "compiler": "gcc 15.2",
         "cpu": "x86_64",
-        "gitCommit": "3a3fcfcdd9af61c2c3a1ac25211851f519659d0d",
+        "gitCommit": "9ec213d0bdd080078e4d922d85c965b4fc9d039c",
         "kernel": "7.0.0-29-generic",
         "memory_mb": 31194,
         "os": "Ubuntu 26.04 LTS",
@@ -20,6 +20,6 @@
     "passed": true,
     "testName": "zztermwidget-history-prepend",
     "threshold": 2000,
-    "timestamp": "2026-08-17T21:06:29Z",
+    "timestamp": "2026-08-17T21:25:48Z",
     "unit": "ms"
 }
