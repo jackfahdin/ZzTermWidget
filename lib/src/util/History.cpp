@@ -184,6 +184,11 @@ bool HistoryScroll::hasScroll() {
     return true; 
 }
 
+int HistoryScroll::prependLines(const QVector<QVector<Character>> &,
+                                const QVector<bool> &) {
+    return 0; // 默认不支持前插
+}
+
 // File-based history (e.g. file log, no limitation in length) ///////////////////
 
 /*
@@ -301,13 +306,33 @@ void HistoryScrollBuffer::addLine(bool previousWrapped) {
     _wrappedLine[bufferIndex(_usedLines - 1)] = previousWrapped;
 }
 
-int HistoryScrollBuffer::getLines() { 
-    return _usedLines; 
+int HistoryScrollBuffer::prependLines(const QVector<QVector<Character>> &lines,
+                                      const QVector<bool> &wrappedFlags) {
+    Q_ASSERT(lines.size() == wrappedFlags.size());
+
+    // 剩余容量不足时保留输入中较新的行（紧邻既有历史，不产生索引空洞）；
+    // 被丢弃的最老行由上层日志引擎兜底持有，用户再次越顶时可重新读回
+    const int room = qMax(0, _maxLineCount - static_cast<int>(_prepended.size()));
+    const int n = qMin(static_cast<int>(lines.size()), room);
+    const int skip = lines.size() - n; // 输入中最老的 skip 行不入缓冲
+    for (int i = lines.size() - 1; i >= skip; i--) {
+        _prepended.push_front(lines[i]);
+        _prependedWrapped.push_front(wrappedFlags[i]);
+    }
+    return n;
+}
+
+int HistoryScrollBuffer::getLines() {
+    return static_cast<int>(_prepended.size()) + _usedLines;
 }
 
 int HistoryScrollBuffer::getLineLen(int lineNumber) {
-    Q_ASSERT(lineNumber >= 0 && lineNumber < _maxLineCount);
+    Q_ASSERT(lineNumber >= 0 && lineNumber < getLines());
 
+    if (lineNumber < static_cast<int>(_prepended.size()))
+        return _prepended[lineNumber].size();
+
+    lineNumber -= static_cast<int>(_prepended.size());
     if (lineNumber < _usedLines) {
         return _historyBuffer[bufferIndex(lineNumber)].size();
     } else {
@@ -316,8 +341,12 @@ int HistoryScrollBuffer::getLineLen(int lineNumber) {
 }
 
 bool HistoryScrollBuffer::isWrappedLine(int lineNumber) {
-    Q_ASSERT(lineNumber >= 0 && lineNumber < _maxLineCount);
+    Q_ASSERT(lineNumber >= 0 && lineNumber < getLines());
 
+    if (lineNumber < static_cast<int>(_prepended.size()))
+        return _prependedWrapped[lineNumber];
+
+    lineNumber -= static_cast<int>(_prepended.size());
     if (lineNumber < _usedLines) {
         return _wrappedLine[bufferIndex(lineNumber)];
     } else
@@ -329,7 +358,16 @@ void HistoryScrollBuffer::getCells(int lineNumber, int startColumn, int count,
     if (count == 0)
         return;
 
-    Q_ASSERT(lineNumber < _maxLineCount);
+    Q_ASSERT(lineNumber < getLines());
+
+    if (lineNumber < static_cast<int>(_prepended.size())) {
+        const HistoryLine &line = _prepended[lineNumber];
+        Q_ASSERT(startColumn <= line.size() - count);
+        memcpy(buffer, line.constData() + startColumn, count * sizeof(Character));
+        return;
+    }
+
+    lineNumber -= static_cast<int>(_prepended.size());
 
     if (lineNumber >= _usedLines) {
         memset(static_cast<void *>(buffer), 0, count * sizeof(Character));
@@ -360,6 +398,12 @@ void HistoryScrollBuffer::setMaxNbLines(unsigned int lineCount) {
 
     _wrappedLine.resize(lineCount);
     dynamic_cast<HistoryTypeBuffer *>(m_histType)->m_nbLines = lineCount;
+
+    // 前插区容量同步收敛到新上限（丢弃最老的前插行，上层日志引擎兜底可再读回）
+    while (static_cast<int>(_prepended.size()) > static_cast<int>(lineCount)) {
+        _prepended.pop_front();
+        _prependedWrapped.pop_front();
+    }
 }
 
 int HistoryScrollBuffer::bufferIndex(int lineNumber) const {

@@ -20,6 +20,8 @@
 #ifndef HISTORY_H
 #define HISTORY_H
 
+#include <deque>
+
 #include <QBitRef>
 #include <QHash>
 #include <QVector>
@@ -100,6 +102,17 @@ public:
 
     virtual void addLine(bool previousWrapped=false) = 0;
 
+    /**
+     * @brief 在滚动缓冲头部前插更老的历史行（外部历史读回注入通道，旧→新顺序）。
+     * @param lines 行数组，每行为一个 Character 序列（char32_t 管线）。
+     * @param wrappedFlags 与 lines 等长的折行标志（LINE_WRAPPED 语义同 addLine）。
+     * @return 实际前插的行数；不支持的滚动类型返回 0。
+     * @note 基类默认不支持前插；HistoryScrollBuffer 以独立前插区实现。
+     *       HistoryScrollFile 为无限历史（行不会离开内存），无读回场景，不支持前插。
+     */
+    virtual int prependLines(const QVector<QVector<Character>> &lines,
+                             const QVector<bool> &wrappedFlags);
+
     //
     // FIXME:  Passing around constant references to HistoryType instances
     // is very unsafe, because those references will no longer
@@ -158,6 +171,9 @@ public:
     void addCellsVector(const QVector<Character>& cells) override;
     void addLine(bool previousWrapped=false) override;
 
+    int prependLines(const QVector<QVector<Character>> &lines,
+                     const QVector<bool> &wrappedFlags) override;
+
     void setMaxNbLines(unsigned int nbLines);
     unsigned int maxNbLines() const { return _maxLineCount; }
 
@@ -169,6 +185,11 @@ private:
     int _maxLineCount;
     int _usedLines;
     int _head;
+
+    // 历史读回前插区：逻辑上位于环形区之前，front 为最老行；
+    // 容量独立于环形区、上限同为 _maxLineCount（总内存占用 ≤2× 上限，规格 §5.1 内存有界）
+    std::deque<HistoryLine> _prepended;   ///< 前插区行数据（旧→新）
+    std::deque<bool> _prependedWrapped;   ///< 前插区折行标志（与 _prepended 一一对应）
 };
 
 class HistoryScrollNone : public HistoryScroll

@@ -5,6 +5,7 @@ set(QTERMWIDGET_TESTS
     tst_emulation
     tst_osc52
     tst_history
+    tst_historyreadback
     tst_protocols
     tst_benchmark
     tst_rendering
@@ -32,3 +33,7 @@ foreach(test_name IN LISTS QTERMWIDGET_TESTS)
     # 无显示环境下运行（CI）；QClipboard 在 offscreen 下为进程内实现，可用
     set_tests_properties(${test_name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endforeach()
+
+# 性能记录落盘需要源码目录（tst_historyreadback 的 perf 用例写入 tests/perf/records/）
+target_compile_definitions(tst_historyreadback PRIVATE
+    ZZ_TERM_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
