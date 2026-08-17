@@ -97,6 +97,10 @@ void HistoryFile::map()
 {
     Q_ASSERT( fileMap == nullptr );
 
+    // 先把缓冲中的写落盘再映射：QFile 的写可能仍在用户态缓冲，
+    // 直接 map 会超出磁盘上的实际文件大小（读到全 0 并触发
+    // "Mapping a file beyond its size" 警告）
+    tmpFile.flush();
     fileMap = reinterpret_cast<char*>(tmpFile.map(0, length));
 
     //if mmap'ing fails, fall back to the seek-read combination
