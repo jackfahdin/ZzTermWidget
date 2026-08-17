@@ -316,6 +316,15 @@ void Emulation::setCellPixelSize(int width, int height)
     _screen[1]->setCellPixelSize(width, height);
 }
 
+int Emulation::prependHistoryLines(const QVector<QVector<Character>> &lines,
+                                   const QVector<bool> &wrappedFlags) {
+    return _screen[0]->prependHistoryLines(lines, wrappedFlags);
+}
+
+qint64 Emulation::historyBaseLine() const {
+    return _screen[0]->historyBaseLine();
+}
+
 QSize Emulation::imageSize() const {
     return {_currentScreen->getColumns(), _currentScreen->getLines()};
 }

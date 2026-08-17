@@ -3,6 +3,7 @@
 #include "Character.h"
 #include "Screen.h"
 #include "TerminalCharacterDecoder.h"
+#include "Vt102Emulation.h"
 
 /**
  * @brief 历史读回注入（前插）的缓冲层回归测试。
@@ -22,6 +23,7 @@ private slots:
     void testPrependKeepsHyperlinkAlignment();
     void testPrependDropPopsParallelTableAtRightIndex();
     void testPrependWrappedFlagsLengthMismatch();
+    void testEmulationPrependForward();
 };
 
 /**
@@ -293,6 +295,34 @@ void TestHistoryReadback::testPrependWrappedFlagsLengthMismatch()
     const QVector<bool> wrapped = { true }; // 故意短于 lines
     QCOMPARE(screen.prependHistoryLines(lines, wrapped), 1);
     QCOMPARE(screen.getHistLines(), 1);
+}
+
+/**
+ * @brief Emulation 转发层：前插作用于主屏，行总数与绝对行号口径同步变化。
+ */
+void TestHistoryReadback::testEmulationPrependForward()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(50));
+    emu.setImageSize(2, 80);
+    QByteArray payload;
+    for (int i = 0; i < 60; i++)
+        payload += "x\r\n";
+    emu.receiveData(payload.constData(), int(payload.size()));
+    // 2 行屏幕：首个换行不滚动，其后 59 次换行各滚入 1 行；环形区封顶 50
+    QCOMPARE(emu.lineCount(), 52);
+    QCOMPARE(emu.historyBaseLine(), qint64(59 - 50)); // 9 行已离开内存
+
+    QVector<QVector<Character>> older;
+    QVector<bool> wrapped;
+    for (int i = 0; i < 9; i++) {
+        older.append({ Character(char32_t(U'0' + i)) });
+        wrapped.append(false);
+    }
+    QCOMPARE(emu.prependHistoryLines(older, wrapped), 9);
+    QCOMPARE(emu.lineCount(), 61);
+    QCOMPARE(emu.historyBaseLine(), qint64(0)); // 注入量恰等于丢行量，base 归零
 }
 
 QTEST_MAIN(TestHistoryReadback)

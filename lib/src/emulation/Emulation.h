@@ -30,7 +30,9 @@
 #include <QTextStream>
 #include <QTimer>
 #include <QStringEncoder>
+#include <QVector>
 
+#include "Character.h"
 #include "KeyboardTranslator.h"
 
 class HistoryType;
@@ -176,6 +178,24 @@ public:
      *       TerminalDisplay::changedFontMetricSignal 接线调用。
      */
     void setCellPixelSize(int width, int height);
+
+    /**
+     * @brief 向主屏历史缓冲头部前插更老的历史行（外部历史提供者读回注入通道）。
+     * @param lines 行数组（旧→新顺序），每行为 char32_t 字符管线的 Character 序列。
+     * @param wrappedFlags 与 lines 等长的折行标志。
+     * @return 实际前插的行数；底层滚动类型不支持前插时返回 0。
+     * @note 只作用于主屏（_screen[0]），与 setHistory/clearHistory 同口径；
+     *       前插后视图层须 scrollTo(currentLine + n) 保持可视内容稳定。
+     * @see Screen::prependHistoryLines
+     */
+    int prependHistoryLines(const QVector<QVector<Character>> &lines,
+                            const QVector<bool> &wrappedFlags);
+
+    /**
+     * @brief 主屏当前内存历史最老一行的绝对行号（会话累计口径）。
+     * @see Screen::historyBaseLine
+     */
+    qint64 historyBaseLine() const;
 
     /**
      * Copies the output history from @p startLine to @p endLine
