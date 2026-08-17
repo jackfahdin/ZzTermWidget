@@ -1411,12 +1411,18 @@ void Screen::addHistLine() {
 
         int newHistLines = history->getLines();
 
+        // 满员丢行时被丢行的整体索引：前插区非空时为环形区最老行（位于中部而非
+        // 表头），三张平行表须在该索引处弹出，否则链接/图像引用错归属并泄漏
+        const int dropIdx = (newHistLines == oldHistLines && oldHistLines > 0)
+                ? qBound(0, history->lastDroppedLineIndex(), oldHistLines - 1)
+                : -1;
+
         // OSC 8：链接段随行进入 scrollback；历史满丢弃最旧行时同步丢弃其段表
         if (newHistLines > oldHistLines) {
             _historyLinks.push_back(std::move(_linkLines[0]));
         } else if (oldHistLines > 0) {
-            releaseHyperlinkLine(_historyLinks.front());
-            _historyLinks.pop_front();
+            releaseHyperlinkLine(_historyLinks[dropIdx]);
+            _historyLinks.erase(_historyLinks.begin() + dropIdx);
             _historyLinks.push_back(std::move(_linkLines[0]));
         } else {
             releaseHyperlinkLine(_linkLines[0]); // 防御：历史容量为零（行无法入库）时直接丢弃
@@ -1427,8 +1433,8 @@ void Screen::addHistLine() {
         if (newHistLines > oldHistLines) {
             _historyImages.push_back(std::move(_imageLines[0]));
         } else if (oldHistLines > 0) {
-            releaseImageLine(_historyImages.front());
-            _historyImages.pop_front();
+            releaseImageLine(_historyImages[dropIdx]);
+            _historyImages.erase(_historyImages.begin() + dropIdx);
             _historyImages.push_back(std::move(_imageLines[0]));
         } else {
             releaseImageLine(_imageLines[0]); // 防御：历史容量为零（行无法入库）时直接销毁
@@ -1439,8 +1445,8 @@ void Screen::addHistLine() {
         if (newHistLines > oldHistLines) {
             _historyKittyRefs.push_back(std::move(_kittyLines[0]));
         } else if (oldHistLines > 0) {
-            releaseKittyRefLine(_historyKittyRefs.front());
-            _historyKittyRefs.pop_front();
+            releaseKittyRefLine(_historyKittyRefs[dropIdx]);
+            _historyKittyRefs.erase(_historyKittyRefs.begin() + dropIdx);
             _historyKittyRefs.push_back(std::move(_kittyLines[0]));
         } else {
             releaseKittyRefLine(_kittyLines[0]); // 防御：历史容量为零时直接销毁
@@ -1497,6 +1503,13 @@ int Screen::prependHistoryLines(const QVector<QVector<Character>> &lines,
                                 const QVector<bool> &wrappedFlags) {
     if (lines.isEmpty())
         return 0;
+
+    // 防御：wrappedFlags 与 lines 长度不一致时按较短者截断，
+    // 避免 HistoryScrollBuffer::prependLines 断言失败/越界读取
+    if (wrappedFlags.size() != lines.size()) {
+        const int m = qMin(lines.size(), wrappedFlags.size());
+        return prependHistoryLines(lines.mid(0, m), wrappedFlags.mid(0, m));
+    }
 
     const int n = history->prependLines(lines, wrappedFlags);
     if (n <= 0)

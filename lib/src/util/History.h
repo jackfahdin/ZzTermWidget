@@ -113,6 +113,15 @@ public:
     virtual int prependLines(const QVector<QVector<Character>> &lines,
                              const QVector<bool> &wrappedFlags);
 
+    /**
+     * @brief 最近一次 addCellsVector/addCells 因满员覆盖所丢弃行的整体行索引（含前插区偏移）。
+     * @return 被丢弃行的整体索引；本次未发生丢弃或不支持时返回 -1。
+     * @note 供上层（Screen 平行表）精确定位被丢弃行：HistoryScrollBuffer 满员覆盖时
+     *       丢弃的是环形区最老行（整体索引 = 前插区行数，前插区非空时位于中部而非表头）；
+     *       文件型历史不丢行，恒为 -1。
+     */
+    virtual int lastDroppedLineIndex() const { return -1; }
+
     //
     // FIXME:  Passing around constant references to HistoryType instances
     // is very unsafe, because those references will no longer
@@ -174,6 +183,8 @@ public:
     int prependLines(const QVector<QVector<Character>> &lines,
                      const QVector<bool> &wrappedFlags) override;
 
+    int lastDroppedLineIndex() const override { return _lastDroppedLineIndex; }
+
     void setMaxNbLines(unsigned int nbLines);
     unsigned int maxNbLines() const { return _maxLineCount; }
 
@@ -185,6 +196,8 @@ private:
     int _maxLineCount;
     int _usedLines;
     int _head;
+    /** @brief 最近一次满员覆盖丢弃行的整体索引（= 前插区行数）；未丢行为 -1。 */
+    int _lastDroppedLineIndex = -1;
 
     // 历史读回前插区：逻辑上位于环形区之前，front 为最老行；
     // 容量独立于环形区、上限同为 _maxLineCount（总内存占用 ≤2× 上限，规格 §5.1 内存有界）

@@ -20,6 +20,8 @@ private slots:
     void testScreenPrependReadbackOrder();
     void testHistoryBaseLine();
     void testPrependKeepsHyperlinkAlignment();
+    void testPrependDropPopsParallelTableAtRightIndex();
+    void testPrependWrappedFlagsLengthMismatch();
 };
 
 /**
@@ -228,6 +230,69 @@ void TestHistoryReadback::testPrependKeepsHyperlinkAlignment()
     // 原历史行 0 的链接随索引平移到行 3；前插入的空行无链接
     QCOMPARE(screen.hyperlinkAt(3, 0), QStringLiteral("https://example.com"));
     QVERIFY(screen.hyperlinkAt(0, 0).isEmpty());
+}
+
+/**
+ * @brief 前插区非空时环形区满员丢行：平行表须在被丢行的整体索引处弹出，
+ *        被丢行的链接归属不得平移错配到前插行上（pop_front 弹错位置的回归）。
+ */
+void TestHistoryReadback::testPrependDropPopsParallelTableAtRightIndex()
+{
+    Screen screen(2, 80);
+    screen.setScroll(HistoryTypeBuffer(4));
+    // LNM 模式使 newLine 兼作回车（newLine 本体仅是换行，不回列），
+    // 保证逐行喂入的文本都从第 0 列开始
+    screen.setMode(MODE_NewLine);
+
+    // H0 带链接，L1..L4 普通；H0..L3 滚入环形区（4 行满），L4 留屏
+    screen.setCurrentHyperlink(QStringLiteral("https://example.com"), QString());
+    for (const char32_t c : QStringLiteral("H0").toUcs4())
+        screen.displayCharacter(c);
+    screen.setCurrentHyperlink(QString(), QString());
+    screen.newLine();
+    for (int i = 1; i <= 4; i++) {
+        for (const char32_t c : QString("L%1").arg(i).toUcs4())
+            screen.displayCharacter(c);
+        screen.newLine();
+    }
+    QCOMPARE(screen.getHistLines(), 4);
+    QCOMPARE(screen.hyperlinkAt(0, 0), QStringLiteral("https://example.com"));
+
+    // 前插 2 行：H0 链接行整体上移到索引 2
+    const QVector<QVector<Character>> older = {
+        { Character(U'p') }, { Character(U'q') }
+    };
+    const QVector<bool> wrapped = { false, false };
+    QCOMPARE(screen.prependHistoryLines(older, wrapped), 2);
+    QCOMPARE(screen.getHistLines(), 6);
+    QCOMPARE(screen.hyperlinkAt(2, 0), QStringLiteral("https://example.com"));
+
+    // 再喂一行：环形区满员覆盖最老环形行 H0（整体索引 2），L4 滚入历史
+    for (const char32_t c : QStringLiteral("L5").toUcs4())
+        screen.displayCharacter(c);
+    screen.newLine();
+    QCOMPARE(screen.getHistLines(), 6);
+
+    // 被丢行的链接必须随之销毁：任何历史行都不得再查到该 URI
+    // （若平行表 pop_front 弹错位置，链接会错配到前插行 q 所在的索引 1）
+    for (int i = 0; i < screen.getHistLines(); i++)
+        QVERIFY2(screen.hyperlinkAt(i, 0).isEmpty(),
+                 qPrintable(QStringLiteral("history line %1 仍持有已丢弃行的链接").arg(i)));
+}
+
+/**
+ * @brief wrappedFlags 与 lines 长度不一致时按较短者截断（防御，不越界不触发断言）。
+ */
+void TestHistoryReadback::testPrependWrappedFlagsLengthMismatch()
+{
+    Screen screen(2, 80);
+    screen.setScroll(HistoryTypeBuffer(100));
+    const QVector<QVector<Character>> lines = {
+        { Character(U'a') }, { Character(U'b') }, { Character(U'c') }
+    };
+    const QVector<bool> wrapped = { true }; // 故意短于 lines
+    QCOMPARE(screen.prependHistoryLines(lines, wrapped), 1);
+    QCOMPARE(screen.getHistLines(), 1);
 }
 
 QTEST_MAIN(TestHistoryReadback)

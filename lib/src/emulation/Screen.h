@@ -780,6 +780,7 @@ public:
      * @param lines 行数组，每行为一个 Character 序列（char32_t 管线，含属性）。
      * @param wrappedFlags 与 lines 等长的折行标志（LINE_WRAPPED 语义同 addLine）。
      * @return 实际前插的行数；底层滚动类型不支持前插（无历史/文件历史）时返回 0。
+     * @note wrappedFlags 与 lines 长度不一致时按较短者截断（防御误用）。
      * @note 前插后历史行索引整体上移 n 行：OSC 8 链接段表、sixel/kitty 图像引用
      *       平行表同步前插空行保持一一对应；选区 loc 坐标同步平移；
      *       视图层须随后 scrollTo(currentLine + n) 保持可视内容稳定

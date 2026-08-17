@@ -284,8 +284,14 @@ HistoryScrollBuffer::~HistoryScrollBuffer() {
 
 void HistoryScrollBuffer::addCellsVector(const QVector<Character> &cells) {
     _head++;
-    if (_usedLines < _maxLineCount)
+    if (_usedLines < _maxLineCount) {
         _usedLines++;
+        _lastDroppedLineIndex = -1; // 未满员：本次无丢弃
+    } else {
+        // 满员覆盖：被丢弃的是环形区最老行，整体索引 = 前插区行数
+        //（前插区非空时位于中部而非表头，上层平行表须按此索引弹出）
+        _lastDroppedLineIndex = static_cast<int>(_prepended.size());
+    }
 
     if (_head >= _maxLineCount) {
         _head = 0;
@@ -404,6 +410,7 @@ void HistoryScrollBuffer::setMaxNbLines(unsigned int lineCount) {
         _prepended.pop_front();
         _prependedWrapped.pop_front();
     }
+    _lastDroppedLineIndex = -1; // 容量调整路径的丢弃不经 addCellsVector 记账，复位防误读
 }
 
 int HistoryScrollBuffer::bufferIndex(int lineNumber) const {
