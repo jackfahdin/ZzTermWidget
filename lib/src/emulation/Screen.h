@@ -776,6 +776,29 @@ public:
     void resetDroppedLines();
 
     /**
+     * @brief 在历史缓冲头部前插更老的历史行（外部历史读回注入通道，旧→新顺序）。
+     * @param lines 行数组，每行为一个 Character 序列（char32_t 管线，含属性）。
+     * @param wrappedFlags 与 lines 等长的折行标志（LINE_WRAPPED 语义同 addLine）。
+     * @return 实际前插的行数；底层滚动类型不支持前插（无历史/文件历史）时返回 0。
+     * @note 前插后历史行索引整体上移 n 行：OSC 8 链接段表、sixel/kitty 图像引用
+     *       平行表同步前插空行保持一一对应；选区 loc 坐标同步平移；
+     *       视图层须随后 scrollTo(currentLine + n) 保持可视内容稳定
+     *       （见 TerminalDisplay::scrollAfterHistoryPrepend）。
+     */
+    int prependHistoryLines(const QVector<QVector<Character>> &lines,
+                            const QVector<bool> &wrappedFlags);
+
+    /**
+     * @brief 当前内存历史最老一行的绝对行号（会话累计口径，显式记账）。
+     * @return 满员丢弃全缓冲最老行时 +1，前插注入 n 行时 -n；无限历史（文件型）下恒为 0；
+     *         负值表示注入了本会话从未滚出过的行（提供者误用，仅供调试参考）。
+     * @note 前插区非空时环形区满员丢弃的是中部行，最老行仍在内存，基线不动——
+     *       防止提供者把内存中已有的行重复回传注入。
+     * @note 供历史读回提供者定位"比该行更老"的外部数据；clearHistory 后归零。
+     */
+    qint64 historyBaseLine() const { return _historyBase; }
+
+    /**
       * Fills the buffer @p dest with @p count instances of the default (ie. blank)
       * Character style.
       */
@@ -863,6 +886,10 @@ private:
     QRect _lastScrolledRegion;
 
     int _droppedLines;
+    /** @brief 当前内存历史最老一行的绝对行号（historyBaseLine 记账值）。 */
+    qint64 _historyBase;
+    /** @brief 历史缓冲当前是否含读回前插入的行（addHistLine 丢行记账的判别条件）。 */
+    bool _hasPrependedLines;
 
     QVarLengthArray<LineProperty,64> lineProperties;
 

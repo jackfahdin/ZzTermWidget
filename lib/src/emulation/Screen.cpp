@@ -54,7 +54,8 @@ Character Screen::defaultChar = Character(
 
 Screen::Screen(int l, int c)
         : lines(l), columns(c), screenLines(new ImageLine[lines + 1]),
-            _scrolledLines(0), _droppedLines(0), history(new HistoryScrollNone()),
+            _scrolledLines(0), _droppedLines(0), _historyBase(0),
+            _hasPrependedLines(false), history(new HistoryScrollNone()),
             cuX(0), cuY(0), currentRendition(0), _topMargin(0), _bottomMargin(0),
             selBegin(0), selTopLeft(0), selBottomRight(0), blockSelectionMode(false),
             effectiveForeground(CharacterColor()),
@@ -1450,8 +1451,14 @@ void Screen::addHistLine() {
 
         // If the history is full, increment the count
         // of dropped lines
-        if (newHistLines == oldHistLines)
+        if (newHistLines == oldHistLines) {
             _droppedLines++;
+            // 绝对行号基线记账：前插区为空时被丢弃的才是全缓冲最老行，基线前进；
+            // 前插区非空时环形区满员丢弃的是中部行，最老行仍在内存，基线不动，
+            // 防止历史提供者把内存中已有的行重复回传注入
+            if (oldHistLines > 0 && !_hasPrependedLines)
+                _historyBase++;
+        }
 
         // Adjust selection for the new point of reference
         if (newHistLines > oldHistLines) {
@@ -1484,6 +1491,36 @@ void Screen::addHistLine() {
                 selBegin = selBottomRight;
         }
     }
+}
+
+int Screen::prependHistoryLines(const QVector<QVector<Character>> &lines,
+                                const QVector<bool> &wrappedFlags) {
+    if (lines.isEmpty())
+        return 0;
+
+    const int n = history->prependLines(lines, wrappedFlags);
+    if (n <= 0)
+        return 0;
+
+    // 三张平行表前插空行，保持与 history 行一一对应（读回行无链接/图像引用）
+    for (int i = 0; i < n; i++) {
+        _historyLinks.push_front(HyperlinkLine());
+        _historyImages.push_front(ImageRefLine());
+        _historyKittyRefs.push_front(KittyRefLine());
+    }
+
+    // 选区 loc 线性坐标随历史行索引整体上移 n 行
+    if (selBegin != -1) {
+        selTopLeft += n * columns;
+        selBottomRight += n * columns;
+        selBegin += n * columns;
+    }
+
+    // 绝对行号基线回退注入量（注入的行当初滚出时已被基线计数）
+    _historyBase -= n;
+    _hasPrependedLines = true;
+
+    return n;
 }
 
 void Screen::setCurrentHyperlink(const QString &uri, const QString &osc8Id) {
@@ -2008,6 +2045,8 @@ void Screen::setScroll(const HistoryType &t, bool copyPreviousScroll) {
         for (KittyRefLine &row : _historyKittyRefs)
             releaseKittyRefLine(row);
         _historyKittyRefs.clear();
+        _historyBase = 0;        // 历史整体废弃（clearHistory）：绝对行号基线归零
+        _hasPrependedLines = false;
     }
 }
 

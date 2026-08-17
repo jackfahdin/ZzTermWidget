@@ -1,6 +1,8 @@
 #include <QtTest>
 #include "History.h"
 #include "Character.h"
+#include "Screen.h"
+#include "TerminalCharacterDecoder.h"
 
 /**
  * @brief 历史读回注入（前插）的缓冲层回归测试。
@@ -15,6 +17,9 @@ private slots:
     void testPrependUnsupportedScrollTypes();
     void testPrependCapacityCap();
     void testAppendAfterPrependKeepsOrder();
+    void testScreenPrependReadbackOrder();
+    void testHistoryBaseLine();
+    void testPrependKeepsHyperlinkAlignment();
 };
 
 /**
@@ -121,6 +126,108 @@ void TestHistoryReadback::testAppendAfterPrependKeepsOrder()
         buf.getCells(i, 0, 1, out.data());
         QCOMPARE(out[0].character, expected[i]);
     }
+}
+
+/**
+ * @brief 向 Screen 喂数据产生历史行前插更老的行经解码流按 旧→新 顺序读回。
+ */
+void TestHistoryReadback::testScreenPrependReadbackOrder()
+{
+    Screen screen(2, 80);
+    screen.setScroll(HistoryTypeBuffer(100));
+    // LNM 模式使 newLine 兼作回车（newLine 本体仅是换行，不回列），
+    // 保证逐行喂入的文本都从第 0 列开始
+    screen.setMode(MODE_NewLine);
+    // 喂 5 行：L0..L3 滚入历史，L4 留在屏幕
+    for (int i = 0; i < 5; i++) {
+        for (const char32_t c : QString("L%1").arg(i).toUcs4())
+            screen.displayCharacter(c);
+        screen.newLine();
+    }
+    QCOMPARE(screen.getHistLines(), 4);
+
+    const QVector<QVector<Character>> older = {
+        { Character(U'o'), Character(U'1') },
+        { Character(U'o'), Character(U'2') }
+    };
+    const QVector<bool> wrapped = { false, false };
+    QCOMPARE(screen.prependHistoryLines(older, wrapped), 2);
+    QCOMPARE(screen.getHistLines(), 6);
+
+    PlainTextDecoder decoder;
+    QString text;
+    QTextStream stream(&text);
+    decoder.begin(&stream);
+    screen.writeLinesToStream(&decoder, 0, screen.getHistLines() - 1);
+    decoder.end();
+    const QStringList outLines = text.split(QLatin1Char('\n'));
+    QCOMPARE(outLines.size(), 7); // 6 行 + 末行后补换行产生的空串
+    QCOMPARE(outLines[0], QStringLiteral("o1"));
+    QCOMPARE(outLines[1], QStringLiteral("o2"));
+    QCOMPARE(outLines[2], QStringLiteral("L0"));
+    QCOMPARE(outLines[5], QStringLiteral("L3"));
+}
+
+/**
+ * @brief historyBaseLine 口径：满员丢行后 base 前进，前插注入后 base 等量回退。
+ */
+void TestHistoryReadback::testHistoryBaseLine()
+{
+    Screen screen(2, 80);
+    screen.setScroll(HistoryTypeBuffer(10));
+    // LNM 模式使 newLine 兼作回车（newLine 本体仅是换行，不回列），
+    // 保证逐行喂入的文本都从第 0 列开始
+    screen.setMode(MODE_NewLine);
+    // 喂 15 行：14 次滚入历史（首行 newLine 时光标未触底不滚动），环形区封顶 10
+    for (int i = 0; i < 15; i++) {
+        for (const char32_t c : QString("L%1").arg(i).toUcs4())
+            screen.displayCharacter(c);
+        screen.newLine();
+    }
+    QCOMPARE(screen.getHistLines(), 10);
+    QCOMPARE(screen.historyBaseLine(), qint64(14 - 10)); // 4 行已离开内存
+
+    const QVector<QVector<Character>> older = {
+        { Character(U'p') }, { Character(U'q') }
+    };
+    const QVector<bool> wrapped = { false, false };
+    QCOMPARE(screen.prependHistoryLines(older, wrapped), 2);
+    QCOMPARE(screen.getHistLines(), 12);
+    QCOMPARE(screen.historyBaseLine(), qint64(2)); // base 回退 2
+}
+
+/**
+ * @brief 前插后 OSC 8 链接段平行表同步平移：原历史行的链接在新索引处可查，
+ *        前插入的空平行行不产生链接。
+ */
+void TestHistoryReadback::testPrependKeepsHyperlinkAlignment()
+{
+    Screen screen(2, 80);
+    screen.setScroll(HistoryTypeBuffer(100));
+    // LNM 模式使 newLine 兼作回车（newLine 本体仅是换行，不回列），
+    // 保证逐行喂入的文本都从第 0 列开始
+    screen.setMode(MODE_NewLine);
+    screen.setCurrentHyperlink(QStringLiteral("https://example.com"), QString());
+    for (const char32_t c : QStringLiteral("L0").toUcs4())
+        screen.displayCharacter(c);
+    screen.setCurrentHyperlink(QString(), QString());
+    screen.newLine();
+    for (const char32_t c : QStringLiteral("L1").toUcs4())
+        screen.displayCharacter(c);
+    screen.newLine(); // L0 滚入历史行 0
+    QCOMPARE(screen.getHistLines(), 1);
+    QCOMPARE(screen.hyperlinkAt(0, 0), QStringLiteral("https://example.com"));
+
+    const QVector<QVector<Character>> older = {
+        { Character(U'a') }, { Character(U'b') }, { Character(U'c') }
+    };
+    const QVector<bool> wrapped = { false, false, false };
+    QCOMPARE(screen.prependHistoryLines(older, wrapped), 3);
+    QCOMPARE(screen.getHistLines(), 4);
+
+    // 原历史行 0 的链接随索引平移到行 3；前插入的空行无链接
+    QCOMPARE(screen.hyperlinkAt(3, 0), QStringLiteral("https://example.com"));
+    QVERIFY(screen.hyperlinkAt(0, 0).isEmpty());
 }
 
 QTEST_MAIN(TestHistoryReadback)
