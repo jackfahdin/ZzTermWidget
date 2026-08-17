@@ -2040,9 +2040,52 @@ int Screen::getHistLines() const { return history->getLines(); }
 void Screen::setScroll(const HistoryType &t, bool copyPreviousScroll) {
     clearSelection();
 
-    if (copyPreviousScroll)
+    if (copyPreviousScroll) {
+        // 缩容/换型前的行数与前插区行数：t.scroll() 可能丢弃部分历史行
+        //（buffer 缩容 setMaxNbLines、或换型为更小容量的 buffer），
+        // 三张平行表与绝对行号基线须随之同步，否则链接/图像引用错归属并泄漏
+        HistoryScroll *oldScroll = history;
+        const int oldLines = oldScroll->getLines();
+        const int oldPrepended = oldScroll->prependedLineCount();
+        const bool oldWasBuffer = dynamic_cast<HistoryScrollBuffer *>(oldScroll) != nullptr;
+
         history = t.scroll(history);
-    else {
+
+        const int totalDropped = oldLines - history->getLines();
+        if (totalDropped > 0) {
+            // 丢行方向：buffer 缩容时前插区从前端弹出最老行、环形区保留最老行
+            //（最新行从尾部离开）；非 buffer 换型（如 file→buffer）保留最新行、
+            // 最老行从前端丢弃
+            const int frontDropped = oldWasBuffer
+                    ? oldPrepended - history->prependedLineCount()
+                    : totalDropped;
+            const int tailDropped = totalDropped - frontDropped;
+
+            // 三表前端/尾端同步弹出（带引用释放），保持与 history 行一一对应
+            for (int i = 0; i < frontDropped; i++) {
+                releaseHyperlinkLine(_historyLinks.front());
+                _historyLinks.pop_front();
+                releaseImageLine(_historyImages.front());
+                _historyImages.pop_front();
+                releaseKittyRefLine(_historyKittyRefs.front());
+                _historyKittyRefs.pop_front();
+            }
+            for (int i = 0; i < tailDropped; i++) {
+                releaseHyperlinkLine(_historyLinks.back());
+                _historyLinks.pop_back();
+                releaseImageLine(_historyImages.back());
+                _historyImages.pop_back();
+                releaseKittyRefLine(_historyKittyRefs.back());
+                _historyKittyRefs.pop_back();
+            }
+
+            // 绝对行号基线只随前端丢弃前进（尾部丢弃不影响最老在内存行的行号）
+            _historyBase += frontDropped;
+            // 前插区可能被缩容清空：按实际前插行数复位记账标志，
+            // 否则后续 addHistLine 满员丢行时基线记账条件失效
+            _hasPrependedLines = history->prependedLineCount() > 0;
+        }
+    } else {
         HistoryScroll *oldScroll = history;
         history = t.scroll(nullptr);
         delete oldScroll;

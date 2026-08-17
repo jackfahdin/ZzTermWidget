@@ -114,6 +114,14 @@ public:
                              const QVector<bool> &wrappedFlags);
 
     /**
+     * @brief 前插区（读回注入）当前行数。
+     * @return 前插区行数；不支持前插的滚动类型恒为 0。
+     * @note 供上层（Screen 平行表/基线记账）在缩容等路径判别前端丢弃量与
+     *       前插区是否清空（如 setMaxNbLines 缩容弹出前插区最老行）。
+     */
+    virtual int prependedLineCount() const { return 0; }
+
+    /**
      * @brief 最近一次 addCellsVector/addCells 因满员覆盖所丢弃行的整体行索引（含前插区偏移）。
      * @return 被丢弃行的整体索引；本次未发生丢弃或不支持时返回 -1。
      * @note 供上层（Screen 平行表）精确定位被丢弃行：HistoryScrollBuffer 满员覆盖时
@@ -184,6 +192,7 @@ public:
                      const QVector<bool> &wrappedFlags) override;
 
     int lastDroppedLineIndex() const override { return _lastDroppedLineIndex; }
+    int prependedLineCount() const override { return static_cast<int>(_prepended.size()); }
 
     void setMaxNbLines(unsigned int nbLines);
     unsigned int maxNbLines() const { return _maxLineCount; }

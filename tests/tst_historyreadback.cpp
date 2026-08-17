@@ -32,6 +32,7 @@ private slots:
     void testHistoryBaseLine();
     void testPrependKeepsHyperlinkAlignment();
     void testPrependDropPopsParallelTableAtRightIndex();
+    void testShrinkAfterReadbackSyncsParallelTables();
     void testPrependWrappedFlagsLengthMismatch();
     void testEmulationPrependForward();
     void testWidgetFetchOlderOnScrollTop();
@@ -290,6 +291,75 @@ void TestHistoryReadback::testPrependDropPopsParallelTableAtRightIndex()
 
     // 被丢行的链接必须随之销毁：任何历史行都不得再查到该 URI
     // （若平行表 pop_front 弹错位置，链接会错配到前插行 q 所在的索引 1）
+    for (int i = 0; i < screen.getHistLines(); i++)
+        QVERIFY2(screen.hyperlinkAt(i, 0).isEmpty(),
+                 qPrintable(QStringLiteral("history line %1 仍持有已丢弃行的链接").arg(i)));
+}
+
+/**
+ * @brief 读回后运行时缩容（setScroll copyPreviousScroll → setMaxNbLines）：
+ *        前插区被弹出的行必须从三张平行表前端同步弹出（带引用释放）、
+ *        绝对行号基线随前端丢弃量前进、尾部被环形区截断的行从平行表尾端弹出；
+ *        缩容前不弹表则链接归属错配、基线停滞导致提供者重复回传（回归）。
+ */
+void TestHistoryReadback::testShrinkAfterReadbackSyncsParallelTables()
+{
+    Screen screen(2, 80);
+    screen.setScroll(HistoryTypeBuffer(10));
+    // LNM 模式使 newLine 兼作回车（newLine 本体仅是换行，不回列），
+    // 保证逐行喂入的文本都从第 0 列开始
+    screen.setMode(MODE_NewLine);
+
+    // 喂 15 行：L0..L13 滚入历史（环形区封顶 10，保留 L4..L13），L14 留屏；
+    // L4（缩容后幸存的最老环形行）带链接 A，L13（缩容时被尾部截断）带链接 B
+    const QString uriA = QStringLiteral("https://example.com/a");
+    const QString uriB = QStringLiteral("https://example.com/b");
+    for (int i = 0; i < 15; i++) {
+        if (i == 4)
+            screen.setCurrentHyperlink(uriA, QString());
+        else if (i == 13)
+            screen.setCurrentHyperlink(uriB, QString());
+        for (const char32_t c : QString("L%1").arg(i).toUcs4())
+            screen.displayCharacter(c);
+        screen.setCurrentHyperlink(QString(), QString());
+        screen.newLine();
+    }
+    QCOMPARE(screen.getHistLines(), 10);
+    QCOMPARE(screen.historyBaseLine(), qint64(4));
+    QCOMPARE(screen.hyperlinkAt(0, 0), uriA); // L4 位于历史行 0
+    QCOMPARE(screen.hyperlinkAt(9, 0), uriB); // L13 位于历史行 9
+
+    // 读回前插 2 行（绝对行号 2、3）：基线回退，链接行索引平移
+    const QVector<QVector<Character>> older = {
+        { Character(U'p') }, { Character(U'q') }
+    };
+    const QVector<bool> wrapped = { false, false };
+    QCOMPARE(screen.prependHistoryLines(older, wrapped), 2);
+    QCOMPARE(screen.getHistLines(), 12);
+    QCOMPARE(screen.historyBaseLine(), qint64(2));
+    QCOMPARE(screen.hyperlinkAt(2, 0), uriA);
+    QCOMPARE(screen.hyperlinkAt(11, 0), uriB);
+
+    // 运行时缩容到 1 行：前插区弹最老的 p（前端丢弃 1 行），
+    // 环形区截断到最老的 L4（L5..L13 从尾部离开）；幸存历史为 [q, L4]
+    screen.setScroll(HistoryTypeBuffer(1));
+    QCOMPARE(screen.getHistLines(), 2);
+    // 基线只随前端丢弃量（p，1 行）前进；尾部截断不影响最老在内存行的绝对行号
+    QCOMPARE(screen.historyBaseLine(), qint64(3));
+    // 平行表同步弹出后：q 行（索引 0）无链接，L4 的链接 A 平移到索引 1
+    QVERIFY(screen.hyperlinkAt(0, 0).isEmpty());
+    QCOMPARE(screen.hyperlinkAt(1, 0), uriA);
+
+    // 继续喂 2 行：环形区满员覆盖最老环形行（整体索引 1），
+    // L4 与 M 依次被丢弃，链接 A 必须随之销毁且不残留错配
+    for (const char32_t c : QStringLiteral("M").toUcs4())
+        screen.displayCharacter(c);
+    screen.newLine();
+    for (const char32_t c : QStringLiteral("N").toUcs4())
+        screen.displayCharacter(c);
+    screen.newLine();
+    QCOMPARE(screen.getHistLines(), 2);
+    QCOMPARE(screen.historyBaseLine(), qint64(3)); // 前插区非空，基线不动
     for (int i = 0; i < screen.getHistLines(); i++)
         QVERIFY2(screen.hyperlinkAt(i, 0).isEmpty(),
                  qPrintable(QStringLiteral("history line %1 仍持有已丢弃行的链接").arg(i)));
