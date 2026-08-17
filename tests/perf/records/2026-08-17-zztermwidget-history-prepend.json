@@ -1,0 +1,25 @@
+{
+    "details": {
+        "batches": 200,
+        "columns": 40,
+        "description": "Screen::prependHistoryLines 前插注入 100000 行（200 批 × 500 行，40 列，与生产越顶取数同形态）",
+        "linesPerBatch": 500,
+        "totalLines": 100000
+    },
+    "environment": {
+        "buildType": "Release",
+        "compiler": "gcc 15.2",
+        "cpu": "x86_64",
+        "gitCommit": "f5752115fdd8cfde85b59147abf1dd2a08d7dd85",
+        "kernel": "7.0.0-29-generic",
+        "memory_mb": 31194,
+        "os": "Ubuntu 26.04 LTS",
+        "qtVersion": "6.11.1"
+    },
+    "measured": 2,
+    "passed": true,
+    "testName": "zztermwidget-history-prepend",
+    "threshold": 2000,
+    "timestamp": "2026-08-17T19:08:01Z",
+    "unit": "ms"
+}

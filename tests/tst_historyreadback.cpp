@@ -1,5 +1,5 @@
 #include <QtTest>
-#include <QDate>
+#include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -420,13 +420,39 @@ void TestHistoryReadback::testProviderEmptyMarksExhausted()
 }
 
 /**
- * @brief 性能记录落盘（规格 §9.1）：写入 tests/perf/records/YYYY-MM-DD-<功能名>.json。
- * @param name 功能名（文件名组成部分）。
+ * @brief 读取物理内存总量（MB），无法获取返回 -1。
+ * @note 与 ZzClawTerm ZzPerfRecorder 同风格；本仓库自包含，不依赖应用仓库基建。
+ */
+static qint64 totalMemoryMB()
+{
+#ifdef Q_OS_LINUX
+    QFile meminfo(QStringLiteral("/proc/meminfo"));
+    if (meminfo.open(QIODevice::ReadOnly)) {
+        const QByteArray content = meminfo.readAll();
+        const int begin = content.indexOf("MemTotal:");
+        if (begin >= 0) {
+            const int end = content.indexOf('\n', begin);
+            const QByteArray line = content.mid(begin, end - begin);
+            // 格式：MemTotal:       16384000 kB（标签与数值之间有多个空格）
+            return QString::fromLatin1(line).split(' ', Qt::SkipEmptyParts)
+                       .value(1).toLongLong() / 1024;
+        }
+    }
+#endif
+    return -1; // Windows/macOS 暂无采集实现，记录为 -1
+}
+
+/**
+ * @brief 性能记录落盘（规格 §9.1，统一 schema）：写入
+ *        tests/perf/records/YYYY-MM-DD-<功能名>.json（日期按 UTC）。
+ * @param name 功能名（文件名与 testName 组成部分）。
  * @param thresholdMs 通过阈值（毫秒）。
  * @param elapsedMs 实测耗时（毫秒）。
  * @param passed 是否通过。
+ * @param details 负载形态等补充说明（可选）。
  */
-static void writePerfRecord(const QString &name, qint64 thresholdMs, qint64 elapsedMs, bool passed)
+static void writePerfRecord(const QString &name, qint64 thresholdMs, qint64 elapsedMs,
+                            bool passed, const QJsonObject &details)
 {
     QString compiler;
 #if defined(Q_CC_CLANG)
@@ -448,33 +474,36 @@ static void writePerfRecord(const QString &name, qint64 thresholdMs, qint64 elap
         commit = QString::fromUtf8(git.readAllStandardOutput()).trimmed();
 
     QJsonObject env {
-        { QStringLiteral("os"), QSysInfo::prettyProductName() },
         { QStringLiteral("cpu"), QSysInfo::currentCpuArchitecture() },
-        { QStringLiteral("qt"), QStringLiteral(QT_VERSION_STR) },
+        { QStringLiteral("memory_mb"), double(totalMemoryMB()) },
+        { QStringLiteral("os"), QSysInfo::prettyProductName() },
+        { QStringLiteral("kernel"), QSysInfo::kernelVersion() },
+        { QStringLiteral("qtVersion"), QString::fromLatin1(qVersion()) },
         { QStringLiteral("compiler"), compiler },
 #ifdef QT_DEBUG
         { QStringLiteral("buildType"), QStringLiteral("Debug") },
 #else
         { QStringLiteral("buildType"), QStringLiteral("Release") },
 #endif
+        { QStringLiteral("gitCommit"), commit },
     };
+    // 扁平结构 + environment/details/timestamp，与 ZzClawTerm 统一 schema 对齐（规格 §9.1 可比性）
     QJsonObject record {
-        { QStringLiteral("test"), name },
-        { QStringLiteral("description"),
-          QStringLiteral("Screen::prependHistoryLines 前插注入 100000 行"
-                         "（200 批 × 500 行，40 列，与生产越顶取数同形态）") },
-        { QStringLiteral("thresholdMs"), thresholdMs },
-        { QStringLiteral("elapsedMs"), elapsedMs },
+        { QStringLiteral("testName"), name },
+        { QStringLiteral("threshold"), double(thresholdMs) },
+        { QStringLiteral("unit"), QStringLiteral("ms") },
+        { QStringLiteral("measured"), double(elapsedMs) },
         { QStringLiteral("passed"), passed },
         { QStringLiteral("environment"), env },
-        { QStringLiteral("commit"), commit },
-        { QStringLiteral("timestamp"), QDateTime::currentDateTime().toString(Qt::ISODate) },
+        { QStringLiteral("details"), details },
+        { QStringLiteral("timestamp"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate) },
     };
 
     QDir dir(QStringLiteral(ZZ_TERM_SOURCE_DIR) + QStringLiteral("/tests/perf/records"));
     QVERIFY2(dir.mkpath(QStringLiteral(".")), "创建性能记录目录失败");
-    const QString fileName = QDate::currentDate().toString(QStringLiteral("yyyy-MM-dd"))
-                           + QStringLiteral("-") + name + QStringLiteral(".json");
+    const QString fileName =
+        QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyy-MM-dd"))
+        + QStringLiteral("-") + name + QStringLiteral(".json");
     QFile file(dir.filePath(fileName));
     QVERIFY2(file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate),
              qPrintable(file.errorString()));
@@ -514,7 +543,16 @@ void TestHistoryReadback::testPrepend100kLinesPerf()
     QCOMPARE(screen.getHistLines(), 100000);
 
     const bool passed = elapsed <= 2000;
-    writePerfRecord(QStringLiteral("zztermwidget-history-prepend"), 2000, elapsed, passed);
+    const QJsonObject details {
+        { QStringLiteral("description"),
+          QStringLiteral("Screen::prependHistoryLines 前插注入 100000 行"
+                         "（200 批 × 500 行，40 列，与生产越顶取数同形态）") },
+        { QStringLiteral("batches"), 200 },
+        { QStringLiteral("linesPerBatch"), 500 },
+        { QStringLiteral("columns"), 40 },
+        { QStringLiteral("totalLines"), 100000 },
+    };
+    writePerfRecord(QStringLiteral("zztermwidget-history-prepend"), 2000, elapsed, passed, details);
     QVERIFY2(passed, qPrintable(QStringLiteral("前插 10 万行耗时 %1ms，阈值 2000ms").arg(elapsed)));
 }
 
