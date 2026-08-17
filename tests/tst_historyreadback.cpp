@@ -1,5 +1,13 @@
 #include <QtTest>
+#include <QDate>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QProcess>
 #include <QScrollBar>
+#include <QSysInfo>
 #include "qtermwidget.h"
 #include "History.h"
 #include "Character.h"
@@ -28,6 +36,7 @@ private slots:
     void testEmulationPrependForward();
     void testWidgetFetchOlderOnScrollTop();
     void testProviderEmptyMarksExhausted();
+    void testPrepend100kLinesPerf();
 };
 
 /**
@@ -408,6 +417,105 @@ void TestHistoryReadback::testProviderEmptyMarksExhausted()
     bar->setValue(5);
     bar->setValue(0);
     QCOMPARE(calls, 1); // 已耗尽，不再回调
+}
+
+/**
+ * @brief 性能记录落盘（规格 §9.1）：写入 tests/perf/records/YYYY-MM-DD-<功能名>.json。
+ * @param name 功能名（文件名组成部分）。
+ * @param thresholdMs 通过阈值（毫秒）。
+ * @param elapsedMs 实测耗时（毫秒）。
+ * @param passed 是否通过。
+ */
+static void writePerfRecord(const QString &name, qint64 thresholdMs, qint64 elapsedMs, bool passed)
+{
+    QString compiler;
+#if defined(Q_CC_CLANG)
+    compiler = QStringLiteral("clang %1.%2").arg(__clang_major__).arg(__clang_minor__);
+#elif defined(Q_CC_GNU)
+    compiler = QStringLiteral("gcc %1.%2").arg(__GNUC__).arg(__GNUC_MINOR__);
+#elif defined(Q_CC_MSVC)
+    compiler = QStringLiteral("msvc %1").arg(_MSC_VER);
+#else
+    compiler = QStringLiteral("unknown");
+#endif
+
+    QString commit;
+    QProcess git;
+    git.start(QStringLiteral("git"),
+              { QStringLiteral("-C"), QStringLiteral(ZZ_TERM_SOURCE_DIR),
+                QStringLiteral("rev-parse"), QStringLiteral("HEAD") });
+    if (git.waitForFinished(5000))
+        commit = QString::fromUtf8(git.readAllStandardOutput()).trimmed();
+
+    QJsonObject env {
+        { QStringLiteral("os"), QSysInfo::prettyProductName() },
+        { QStringLiteral("cpu"), QSysInfo::currentCpuArchitecture() },
+        { QStringLiteral("qt"), QStringLiteral(QT_VERSION_STR) },
+        { QStringLiteral("compiler"), compiler },
+#ifdef QT_DEBUG
+        { QStringLiteral("buildType"), QStringLiteral("Debug") },
+#else
+        { QStringLiteral("buildType"), QStringLiteral("Release") },
+#endif
+    };
+    QJsonObject record {
+        { QStringLiteral("test"), name },
+        { QStringLiteral("description"),
+          QStringLiteral("Screen::prependHistoryLines 前插注入 100000 行"
+                         "（200 批 × 500 行，40 列，与生产越顶取数同形态）") },
+        { QStringLiteral("thresholdMs"), thresholdMs },
+        { QStringLiteral("elapsedMs"), elapsedMs },
+        { QStringLiteral("passed"), passed },
+        { QStringLiteral("environment"), env },
+        { QStringLiteral("commit"), commit },
+        { QStringLiteral("timestamp"), QDateTime::currentDateTime().toString(Qt::ISODate) },
+    };
+
+    QDir dir(QStringLiteral(ZZ_TERM_SOURCE_DIR) + QStringLiteral("/tests/perf/records"));
+    QVERIFY2(dir.mkpath(QStringLiteral(".")), "创建性能记录目录失败");
+    const QString fileName = QDate::currentDate().toString(QStringLiteral("yyyy-MM-dd"))
+                           + QStringLiteral("-") + name + QStringLiteral(".json");
+    QFile file(dir.filePath(fileName));
+    QVERIFY2(file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate),
+             qPrintable(file.errorString()));
+    file.write(QJsonDocument(record).toJson(QJsonDocument::Indented));
+}
+
+/**
+ * @brief 性能门控：前插注入 10 万行总耗时 ≤2000ms（仅 Release 门控，规格 §9.1）。
+ */
+void TestHistoryReadback::testPrepend100kLinesPerf()
+{
+#ifdef QT_DEBUG
+    QSKIP("性能阈值仅在 Release 构建下门控（规格 §9.1）");
+#endif
+    Screen screen(24, 80);
+    screen.setScroll(HistoryTypeBuffer(100000));
+
+    // 预造一批 500 行（40 列）带默认属性的行，模拟提供者分批读回的同形态负载
+    QVector<QVector<Character>> batch;
+    QVector<bool> wrapped;
+    batch.reserve(500);
+    wrapped.reserve(500);
+    for (int i = 0; i < 500; i++) {
+        QVector<Character> line;
+        line.reserve(40);
+        for (int j = 0; j < 40; j++)
+            line.append(Character(char32_t(U'a' + (j % 26))));
+        batch.append(std::move(line));
+        wrapped.append(false);
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    for (int b = 0; b < 200; b++)
+        QCOMPARE(screen.prependHistoryLines(batch, wrapped), 500);
+    const qint64 elapsed = timer.elapsed();
+    QCOMPARE(screen.getHistLines(), 100000);
+
+    const bool passed = elapsed <= 2000;
+    writePerfRecord(QStringLiteral("zztermwidget-history-prepend"), 2000, elapsed, passed);
+    QVERIFY2(passed, qPrintable(QStringLiteral("前插 10 万行耗时 %1ms，阈值 2000ms").arg(elapsed)));
 }
 
 QTEST_MAIN(TestHistoryReadback)
