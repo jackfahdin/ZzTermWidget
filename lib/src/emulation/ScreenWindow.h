@@ -77,6 +77,16 @@ public:
     Character* getImage();
 
     /**
+     * @brief 返回窗口相对行 relLine 的有效长度（委托 Screen::getLineLength）。
+     */
+    int windowLineLength(int relLine) const;
+
+    /**
+     * @brief 把窗口相对行 relLine 的 [startCol, startCol+count) 字符拷入 dest。
+     */
+    void getWindowLineSlice(int relLine, int startCol, int count, Character* dest);
+
+    /**
      * Returns the line attributes associated with the lines of characters which
      * are currently visible through this window
      */

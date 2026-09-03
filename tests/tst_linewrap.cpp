@@ -1,5 +1,6 @@
 #include <QtTest>
 #include "Screen.h"
+#include "ScreenWindow.h"
 
 /**
  * @brief 行显示模式（软折叠/横向滚动条）回归测试。
@@ -10,6 +11,7 @@ class TestLineWrap : public QObject
 private slots:
     void screenLineLength();
     void screenLineSlice();
+    void screenWindowForwarding();
 };
 
 void TestLineWrap::screenLineLength()
@@ -42,6 +44,23 @@ void TestLineWrap::screenLineSlice()
     screen.getLineSlice(0, 8, 4, dest);
     QVERIFY(dest[0].isSpace());
     QVERIFY(dest[3].isSpace());
+}
+
+void TestLineWrap::screenWindowForwarding()
+{
+    Screen screen(4, 10);
+    ScreenWindow window;
+    window.setScreen(&screen);
+    window.setWindowLines(4);
+    screen.displayCharacter(U'x');
+    screen.displayCharacter(U'y');
+
+    QCOMPARE(window.windowLineLength(0), 2);
+
+    Character dest[2];
+    window.getWindowLineSlice(0, 0, 2, dest);
+    QCOMPARE(dest[0].character, U'x');
+    QCOMPARE(dest[1].character, U'y');
 }
 
 QTEST_GUILESS_MAIN(TestLineWrap)

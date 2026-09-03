@@ -63,6 +63,14 @@ Character *ScreenWindow::getImage() {
     return _windowBuffer;
 }
 
+int ScreenWindow::windowLineLength(int relLine) const {
+    return _screen->getLineLength(currentLine() + relLine);
+}
+
+void ScreenWindow::getWindowLineSlice(int relLine, int startCol, int count, Character* dest) {
+    _screen->getLineSlice(currentLine() + relLine, startCol, count, dest);
+}
+
 void ScreenWindow::fillUnusedArea() {
     int screenEndLine = _screen->getHistLines() + _screen->getLines() - 1;
     int windowEndLine = currentLine() + windowLines() - 1;
