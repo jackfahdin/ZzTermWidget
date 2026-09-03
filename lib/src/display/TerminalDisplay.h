@@ -488,6 +488,13 @@ public:
     /** @brief 仅供测试：横向滚动条 maximum。 */
     int hScrollBarMaximumForTest() const { return _hScrollBar ? _hScrollBar->maximum() : -1; }
 
+    /** @brief 仅供测试：显示网格坐标 → 缓冲窗口相对坐标。 */
+    QPoint mapDisplayToBufferForTest(int x, int y) const { return mapDisplayToBuffer(x, y); }
+    /** @brief 仅供测试：垂直滚动条 maximum。 */
+    int vScrollBarMaximumForTest() const;
+    /** @brief 仅供测试：设置垂直滚动条值（经 valueChanged 走完整滚动路径）。 */
+    void setVScrollBarValueForTest(int value);
+
     /**
      * Sets the terminal screen section which is displayed in this widget.
      * When updateImage() is called, the display fetches the latest character image from the
@@ -934,6 +941,22 @@ private:
     /** @brief 当前可见内容的最大有效行宽。 */
     int maxVisibleLineWidth() const;
 
+    /** @brief 显示网格坐标 → 缓冲窗口相对坐标（NoWrap 加水平偏移；SoftWrap 经 _displayRows 折叠段换算）。 */
+    QPoint mapDisplayToBuffer(int x, int y) const;
+    /** @brief 缓冲窗口相对坐标 → 显示网格坐标；不可见时返回 QPoint(-1, -1)。 */
+    QPoint mapBufferToDisplay(int bufX, int bufY) const;
+    /** @brief 显示段：缓冲行列区间在显示网格上的一段（显示行 + 段内起止显示列，闭区间）。 */
+    struct DisplaySegment {
+        int row;
+        int startColumn;
+        int endColumn;
+    };
+    /**
+     * @brief 缓冲窗口行 bufLine 的列区间 [startCol, endCol]（闭区间）对应的显示段列表。
+     * @return 每项为 (显示行, 段内起始显示列, 段内结束显示列)；不可见时为空。
+     */
+    QVector<DisplaySegment> displaySegmentsForRange(int bufLine, int startCol, int endCol) const;
+
     void paintFilters(QPainter& painter);
 
     void calDrawTextAdditionHeight(QPainter& painter);
@@ -1069,6 +1092,10 @@ private:
     QScrollBar *_hScrollBar = nullptr;   ///< NoWrap 模式的横向滚动条（按需出现）
     int _hScrollOffset = 0;              ///< 水平视口偏移（列）
     QVector<DisplayRow> _displayRows;    ///< SoftWrap：显示行 →（缓冲区行, 列偏移）
+    /** @brief 上一帧 updateImage 是否走了 composeViewImage 合成路径（选区反显方式分流用）。 */
+    bool _composedViewActive = false;
+    /** @brief 合成路径上一帧是否存在活动选区（选区清除帧强制置脏用）。 */
+    bool _composedSelectionActive = false;
     QString     _wordCharacters;
     int         _bellMode;
 

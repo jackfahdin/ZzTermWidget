@@ -47,6 +47,10 @@ private slots:
     void softWrapComposition();
     void hscrollRangeAndVisibility();
     void hscrollAutoReset();
+    void softWrapCoordinateMapping();
+    void softWrapScrollRange();
+    void softWrapSelectionHighlight();
+    void hscrollSelectionHighlight();
 };
 
 void TestLineWrap::screenLineLength()
@@ -242,6 +246,175 @@ void TestLineWrap::hscrollAutoReset()
     // 偏移回零不改变超宽事实：滚动条仍在，range 不变
     QVERIFY(display.hScrollBarVisibleForTest());
     QCOMPARE(display.hScrollBarMaximumForTest(), 15);
+}
+
+void TestLineWrap::softWrapCoordinateMapping()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列：25 字符一行放下、不硬折行
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格固定为 10 列 × 5 行：25 字符缓冲行在视图中折叠为 3 个显示段
+    display.resize(10 * display.fontWidth() + 2, 5 * display.fontHeight() + 2);
+
+    const QByteArray text("abcdefghijklmnopqrstuvwxy");
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);   // 等待 outputChanged 驱动 updateImage 重建 _displayRows
+
+    // 折叠段 {缓冲行 0, 列偏移 0/10/20}：显示 (0,1) → 缓冲 (10,0)；显示 (3,2) → 缓冲 (23,0)
+    QCOMPARE(display.mapDisplayToBufferForTest(0, 1), QPoint(10, 0));
+    QCOMPARE(display.mapDisplayToBufferForTest(3, 2), QPoint(23, 0));
+    // 首段为恒等映射
+    QCOMPARE(display.mapDisplayToBufferForTest(5, 0), QPoint(5, 0));
+}
+
+void TestLineWrap::softWrapScrollRange()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格固定为 10 列 × 5 行
+    display.resize(10 * display.fontWidth() + 2, 5 * display.fontHeight() + 2);
+
+    // 输出 10 条 25 字符行（行间 \r\n，末尾无换行）：历史 8 行 + 屏幕 2 行，
+    // 每行折叠 3 段，全缓冲折叠后共 30 个显示行
+    for (int i = 0; i < 10; ++i) {
+        const QByteArray line(25, char('a' + i));
+        emu.receiveData(line.constData(), static_cast<int>(line.size()));
+        if (i < 9)
+            emu.receiveData("\r\n", 2);
+    }
+    QTest::qWait(50);
+
+    // 垂直滚动条 range 以显示行计：maximum = 30 - 5 = 25
+    QCOMPARE(display.vScrollBarMaximumForTest(), 25);
+
+    // 显示行 3 = 缓冲行 1 第 2 段起点；反推后窗口顶落在缓冲行 1
+    // （段内精度丢失为 v1 已知简化）
+    display.setVScrollBarValueForTest(3);
+    QCOMPARE(display.screenWindow()->currentLine(), 1);
+}
+
+/**
+ * @brief 显示行 row 内容区的平均灰度（选区反显断言用）。
+ * @note 左右/上下基础边距各 1px；选中行前景/背景交换后平均亮度显著变化。
+ */
+static qint64 rowBrightness(const QImage &img, int row, int columns,
+                            int fontWidth, int fontHeight)
+{
+    qint64 sum = 0;
+    qint64 n = 0;
+    for (int py = 1 + row * fontHeight; py < 1 + (row + 1) * fontHeight; ++py)
+        for (int px = 1; px < 1 + columns * fontWidth; ++px) {
+            sum += qGray(img.pixel(px, py));
+            ++n;
+        }
+    return n ? sum / n : 0;
+}
+
+void TestLineWrap::softWrapSelectionHighlight()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列：25 字符一行放下
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格 10 列 × 5 行：25 字符缓冲行折叠为 3 个显示段
+    display.resize(10 * display.fontWidth() + 2, 5 * display.fontHeight() + 2);
+
+    const QByteArray text("abcdefghijklmnopqrstuvwxy");
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);
+
+    // 选中缓冲行 0 的列 10..19（恰为第 2 个折叠段 = 显示行 1 整段）
+    win->setSelectionStart(10, 0, false);
+    win->setSelectionEnd(19, 0);
+    QTest::qWait(100);  // selectionChanged → bufferedUpdate（最长 40ms）→ updateImage
+
+    // getLineSlice 刻意不做选区反色，合成视图的高亮全靠绘制层 isSelected
+    // 即时交换：显示行 1（选中段，暗底亮字）平均亮度应显著低于
+    // 未选中的显示行 0（默认亮底暗字）
+    const QImage img = display.grab().toImage();
+    const qint64 selected = rowBrightness(img, 1, 10, display.fontWidth(),
+                                          display.fontHeight());
+    const qint64 unselected = rowBrightness(img, 0, 10, display.fontWidth(),
+                                            display.fontHeight());
+    QVERIFY2(selected + 40 < unselected,
+             qPrintable(QStringLiteral("selected=%1 unselected=%2")
+                                .arg(selected).arg(unselected)));
+}
+
+void TestLineWrap::hscrollSelectionHighlight()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列：25 字符一行放下
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    // NoWrap，显示网格 10 列 × 3 行：横向滚动条出现后余 2 个显示行，
+    // 文本行 0 + 空光标行 1 均可见（2 行夹具会被滚动条吃到只剩 1 行，
+    // 下一帧 trackOutput 把窗口重锚定到空光标行，文本滚出视图——任务 6 已知行为）
+    display.resize(10 * display.fontWidth() + 2, 3 * display.fontHeight() + 2);
+    display.show();
+
+    const QByteArray text("abcdefghijklmnopqrstuvwxy");
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);
+    QVERIFY(display.hScrollBarVisibleForTest());
+
+    // Shift+滚轮向下：水平视口右移 4 列（显示列 x 对应缓冲列 x+4）
+    const QPointF center(display.width() / 2.0, display.height() / 2.0);
+    QWheelEvent wheelDown(center, center, QPoint(0, 0), QPoint(0, -120),
+                          Qt::NoButton, Qt::ShiftModifier,
+                          Qt::NoScrollPhase, false);
+    QApplication::sendEvent(&display, &wheelDown);
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'e');
+
+    // 选中缓冲列 4..13（恰为当前水平视口可见的整段）
+    win->setSelectionStart(4, 0, false);
+    win->setSelectionEnd(13, 0);
+    QTest::qWait(100);  // selectionChanged → bufferedUpdate → updateImage
+
+    // NoWrap 偏移下 isSelected 经 mapDisplayToBuffer 换算回缓冲列：
+    // 显示行 0 整行反显（暗底亮字），平均亮度显著低于未选中的空行 1
+    const QImage img = display.grab().toImage();
+    const qint64 selected = rowBrightness(img, 0, 10, display.fontWidth(),
+                                          display.fontHeight());
+    const qint64 unselected = rowBrightness(img, 1, 10, display.fontWidth(),
+                                            display.fontHeight());
+    QVERIFY2(selected + 40 < unselected,
+             qPrintable(QStringLiteral("selected=%1 unselected=%2")
+                                .arg(selected).arg(unselected)));
 }
 
 QTEST_MAIN(TestLineWrap)

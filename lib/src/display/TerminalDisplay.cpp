@@ -1219,13 +1219,15 @@ void TerminalDisplay::drawTextFragment(QPainter &painter, const QRect &rect,
     // 选中文本的前景色/背景色交换仅在局部副本上进行，避免写回调用方的 Character。
     // 注：swappedStyle 必须声明在函数作用域——style 指针在后续 setup painter /
     // drawCharacters 中仍被解引用，移入 if 块内会导致悬垂指针。
+    // 交换时机：半透明选区模式（opacity < 1）恒交换（既有行为）；合成视图
+    // （NoWrap 超宽/水平偏移、SoftWrap 折叠）的 _image 未经 Screen::getImage
+    // 的选区反色烘焙（getLineSlice 只读不反色），须在此交换补出高亮；
+    // getImage 快路径反色已烘焙进 _image，不得再交换（双重反色抵消）
     Character swappedStyle;
-    if (_selectedTextOpacity < 1.0) {
-        if (isSelection) {
-            swappedStyle = *style;
-            std::swap(swappedStyle.foregroundColor, swappedStyle.backgroundColor);
-            style = &swappedStyle;
-        }
+    if (isSelection && (_selectedTextOpacity < 1.0 || _composedViewActive)) {
+        swappedStyle = *style;
+        std::swap(swappedStyle.foregroundColor, swappedStyle.backgroundColor);
+        style = &swappedStyle;
     }
 
     // setup painter
@@ -1384,36 +1386,20 @@ QRegion TerminalDisplay::hotSpotRegion() const {
     QRegion region;
     const auto hotSpots = _filterChain->hotSpots();
     for (Filter::HotSpot *const hotSpot : hotSpots) {
-        QRect r;
-        if (hotSpot->startLine() == hotSpot->endLine()) {
-            r.setLeft(hotSpot->startColumn());
-            r.setTop(hotSpot->startLine());
-            r.setRight(hotSpot->endColumn());
-            r.setBottom(hotSpot->endLine());
-            region |= imageToWidget(r);
-            ;
-        } else {
-            r.setLeft(hotSpot->startColumn());
-            r.setTop(hotSpot->startLine());
-            r.setRight(_columns);
-            r.setBottom(hotSpot->startLine());
-            region |= imageToWidget(r);
-            ;
-            for (int line = hotSpot->startLine() + 1; line < hotSpot->endLine();
-                     line++) {
-                r.setLeft(0);
-                r.setTop(line);
-                r.setRight(_columns);
-                r.setBottom(line);
+        // 热点行列是缓冲窗口坐标：逐缓冲行经 displaySegmentsForRange 换算为
+        // 显示段（NoWrap 水平平移 / SoftWrap 折叠分段），经典模式为单段恒等
+        for (int line = hotSpot->startLine(); line <= hotSpot->endLine(); ++line) {
+            const int startCol = (line == hotSpot->startLine()) ? hotSpot->startColumn() : 0;
+            const int endCol = (line == hotSpot->endLine()) ? hotSpot->endColumn() : _columns - 1;
+            const auto segments = displaySegmentsForRange(line, startCol, endCol);
+            for (const DisplaySegment &seg : segments) {
+                QRect r;
+                r.setLeft(seg.startColumn);
+                r.setTop(seg.row);
+                r.setRight(seg.endColumn);
+                r.setBottom(seg.row);
                 region |= imageToWidget(r);
-                ;
             }
-            r.setLeft(0);
-            r.setTop(hotSpot->endLine());
-            r.setRight(hotSpot->endColumn());
-            r.setBottom(hotSpot->endLine());
-            region |= imageToWidget(r);
-            ;
         }
     }
     return region;
@@ -1476,7 +1462,21 @@ bool TerminalDisplay::composeViewImage(Character *dest) {
     const int winLines = _screenWindow->windowLines();
 
     if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap) {
-        _displayRows = buildFoldMap(windowLineLengths(), _columns, _lines);
+        QVector<int> lengths = windowLineLengths();
+        // 含图形（sixel/kitty）或 OSC 8 链接段的行、双宽/双高行不折叠：
+        // 图形放置与链接段锚定缓冲坐标，折叠会破坏锚定；双高行依赖相邻显示行
+        // 副本配对，折叠会破坏配对。这些行的有效长度钳到显示列数（单段、列偏移 0）
+        const QVector<LineProperty> props = _screenWindow->getLineProperties();
+        Screen *screen = _screenWindow->screen();
+        const int topLine = _screenWindow->currentLine();
+        for (int i = 0; i < lengths.size() && i < props.size(); ++i) {
+            if (!screen->imagePlacements(topLine + i).isEmpty()
+                || !screen->kittyRefs(topLine + i).isEmpty()
+                || !screen->linkSegments(topLine + i).isEmpty()
+                || (props[i] & (LINE_DOUBLEWIDTH | LINE_DOUBLEHEIGHT)))
+                lengths[i] = qMin(lengths[i], _columns);
+        }
+        _displayRows = buildFoldMap(lengths, _columns, _lines);
         for (int y = 0; y < _lines; ++y) {
             if (y < _displayRows.size()) {
                 const DisplayRow &row = _displayRows[y];
@@ -1503,6 +1503,71 @@ bool TerminalDisplay::composeViewImage(Character *dest) {
                 dest[y * _columns + x] = Character();
     }
     return true;
+}
+
+int TerminalDisplay::vScrollBarMaximumForTest() const {
+    return _scrollBar ? _scrollBar->maximum() : -1;
+}
+
+void TerminalDisplay::setVScrollBarValueForTest(int value) {
+    if (_scrollBar)
+        _scrollBar->setValue(value);
+}
+
+QPoint TerminalDisplay::mapDisplayToBuffer(int x, int y) const {
+    if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap
+        && y >= 0 && y < _displayRows.size()) {
+        const DisplayRow &row = _displayRows[y];
+        return {x + row.columnOffset, row.bufferLine};
+    }
+    return {x + (_lineWrapMode == QTermWidget::LineWrapMode::NoWrap ? _hScrollOffset : 0), y};
+}
+
+QPoint TerminalDisplay::mapBufferToDisplay(int bufX, int bufY) const {
+    if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap) {
+        // 在折叠段中找覆盖缓冲列 bufX 的段；找不到说明该缓冲位置当前不可见
+        for (int i = 0; i < _displayRows.size(); ++i) {
+            const DisplayRow &row = _displayRows[i];
+            if (row.bufferLine == bufY && bufX >= row.columnOffset
+                && bufX < row.columnOffset + _columns)
+                return {bufX - row.columnOffset, i};
+        }
+        return {-1, -1};
+    }
+    const int x = bufX - (_lineWrapMode == QTermWidget::LineWrapMode::NoWrap ? _hScrollOffset : 0);
+    if (x < 0 || x >= _columns)
+        return {-1, -1};   // 水平视口之外，不可见
+    return {x, bufY};
+}
+
+QVector<TerminalDisplay::DisplaySegment>
+TerminalDisplay::displaySegmentsForRange(int bufLine, int startCol, int endCol) const {
+    QVector<DisplaySegment> segments;
+    if (endCol < startCol)
+        return segments;
+
+    if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap) {
+        // 缓冲行的折叠段在 _displayRows 中连续排布，逐段求列区间交集
+        for (int i = 0; i < _displayRows.size(); ++i) {
+            const DisplayRow &row = _displayRows[i];
+            if (row.bufferLine != bufLine)
+                continue;
+            const int segStart = qMax(startCol, row.columnOffset) - row.columnOffset;
+            const int segEnd =
+                    qMin(endCol, row.columnOffset + _columns - 1) - row.columnOffset;
+            if (segStart <= segEnd)
+                segments.append({i, segStart, segEnd});
+        }
+        return segments;
+    }
+
+    // NoWrap：水平视口 [_hScrollOffset, _hScrollOffset + _columns) 内的部分可见
+    if (endCol >= _hScrollOffset && startCol < _hScrollOffset + _columns) {
+        segments.append({bufLine,
+                         qBound(0, startCol - _hScrollOffset, _columns - 1),
+                         qBound(0, endCol - _hScrollOffset, _columns - 1)});
+    }
+    return segments;
 }
 
 void TerminalDisplay::updateImage() {
@@ -1557,6 +1622,9 @@ void TerminalDisplay::updateImage() {
     }
     if (!newimg)
         newimg = _screenWindow->getImage();
+    // 记录本帧是否合成视图：getImage 快路径的选区反色由 Screen 烘焙进字符，
+    // 合成路径（getLineSlice 只读不反色）靠绘制层即时交换，两条路径不得混用
+    _composedViewActive = (composed != nullptr);
     int lines = _screenWindow->windowLines();
     int columns = _screenWindow->windowColumns();
     if (composed) {
@@ -1565,7 +1633,18 @@ void TerminalDisplay::updateImage() {
         columns = _columns;
     }
 
-    setScroll(_screenWindow->currentLine(), _screenWindow->lineCount());
+    // 垂直滚动条：SoftWrap 下 range/value 以全缓冲折叠后的显示行计，
+    // 其余模式以缓冲行计
+    if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap) {
+        const QVector<int> lengths = allLineLengths();
+        int total = 0;
+        for (int len : lengths)
+            total += foldCountForLine(len, _columns);
+        setScroll(displayRowOffsetOfLine(lengths, _columns, _screenWindow->currentLine()),
+                  total);
+    } else {
+        setScroll(_screenWindow->currentLine(), _screenWindow->lineCount());
+    }
 
     // 横向滚动条：仅 NoWrap 模式、存在超宽行时出现
     if (_lineWrapMode == QTermWidget::LineWrapMode::NoWrap && _hScrollBar) {
@@ -1832,6 +1911,19 @@ void TerminalDisplay::updateImage() {
         dirtyRegion |= QRect(_leftMargin + tLx, _topMargin + tLy,
                              _fontWidth * _usedColumns, _fontHeight * _usedLines);
         scr->clearGraphicsDirty();
+    }
+
+    // 合成视图的选区反显由绘制层即时交换前景/背景实现，_image 内容不含选区
+    // 状态，字符比对感知不到高亮变化：选区存在期间及刚清除的一帧强制整体
+    // 置脏补刷（交互式选择的低频帧，代价可接受）
+    if (_composedViewActive) {
+        const bool selectionActive = !_screenWindow->isClearSelection();
+        if (selectionActive || _composedSelectionActive)
+            dirtyRegion |= QRect(_leftMargin + tLx, _topMargin + tLy,
+                                 _fontWidth * _usedColumns, _fontHeight * _usedLines);
+        _composedSelectionActive = selectionActive;
+    } else {
+        _composedSelectionActive = false;
     }
 
     dirtyRegion |= _inputMethodData.previousPreeditRect;
@@ -2127,8 +2219,14 @@ QRect TerminalDisplay::preeditRect() const {
     if (preeditLength == 0)
         return {};
 
-    return QRect(_leftMargin + _fontWidth * cursorPosition().x(),
-                             _topMargin + _fontHeight * cursorPosition().y(),
+    // 缓冲坐标 → 显示坐标；光标不可见时无有效预编辑区域
+    const QPoint buf = cursorPosition();
+    const QPoint disp = mapBufferToDisplay(buf.x(), buf.y());
+    if (disp.x() < 0)
+        return {};
+
+    return QRect(_leftMargin + _fontWidth * disp.x(),
+                             _topMargin + _fontHeight * disp.y(),
                              _fontWidth * preeditLength, _fontHeight);
 }
 
@@ -2171,7 +2269,11 @@ void TerminalDisplay::paintFilters(QPainter &painter) {
                             : 0);
 
     getCharacterPosition(cursorPos, cursorLine, cursorColumn);
-    Character cursorCharacter = _image[loc(cursorColumn, cursorLine)];
+    // getCharacterPosition 返回缓冲坐标；_image 按显示网格寻址，须换算回显示行列
+    const QPoint dispCursor = mapBufferToDisplay(cursorColumn, cursorLine);
+    Character cursorCharacter =
+            _image[loc(dispCursor.x() < 0 ? cursorColumn : dispCursor.x(),
+                       dispCursor.y() < 0 ? cursorLine : dispCursor.y())];
 
     painter.setPen(QPen(cursorCharacter.foregroundColor.color(colorTable())));
 
@@ -2185,31 +2287,21 @@ void TerminalDisplay::paintFilters(QPainter &painter) {
 
         QRegion region;
         if (spot->type() == Filter::HotSpot::Link) {
+            // 热点坐标为缓冲窗口坐标：逐缓冲行换算为显示段后拼区域
+            // （列区间左闭右开 → 段换算取闭区间 [start, end-1]），经典模式单段恒等
             QRect r;
-            if (spot->startLine() == spot->endLine()) {
-                r.setCoords(spot->startColumn() * _fontWidth + 1 + leftMargin,
-                                spot->startLine() * _fontHeight + 1 + _topBaseMargin,
-                                spot->endColumn() * _fontWidth - 1 + leftMargin,
-                                (spot->endLine() + 1) * _fontHeight - 1 + _topBaseMargin);
-                region |= r;
-            } else {
-                r.setCoords(spot->startColumn() * _fontWidth + 1 + leftMargin,
-                                spot->startLine() * _fontHeight + 1 + _topBaseMargin,
-                                _columns * _fontWidth - 1 + leftMargin,
-                                (spot->startLine() + 1) * _fontHeight - 1 + _topBaseMargin);
-                region |= r;
-                for (int line = spot->startLine() + 1; line < spot->endLine(); line++) {
-                    r.setCoords(0 * _fontWidth + 1 + leftMargin,
-                                    line * _fontHeight + 1 + _topBaseMargin,
-                                    _columns * _fontWidth - 1 + leftMargin,
-                                    (line + 1) * _fontHeight - 1 + _topBaseMargin);
+            for (int line = spot->startLine(); line <= spot->endLine(); ++line) {
+                const int startCol = (line == spot->startLine()) ? spot->startColumn() : 0;
+                const int endCol =
+                        (line == spot->endLine()) ? spot->endColumn() - 1 : _columns - 1;
+                const auto segments = displaySegmentsForRange(line, startCol, endCol);
+                for (const DisplaySegment &seg : segments) {
+                    r.setCoords(seg.startColumn * _fontWidth + 1 + leftMargin,
+                                seg.row * _fontHeight + 1 + _topBaseMargin,
+                                (seg.endColumn + 1) * _fontWidth - 1 + leftMargin,
+                                (seg.row + 1) * _fontHeight - 1 + _topBaseMargin);
                     region |= r;
                 }
-                r.setCoords(0 * _fontWidth + 1 + leftMargin,
-                                spot->endLine() * _fontHeight + 1 + _topBaseMargin,
-                                spot->endColumn() * _fontWidth - 1 + leftMargin,
-                                (spot->endLine() + 1) * _fontHeight - 1 + _topBaseMargin);
-                region |= r;
             }
         }
 
@@ -2240,39 +2332,36 @@ void TerminalDisplay::paintFilters(QPainter &painter) {
             if (line == spot->endLine())
                 endColumn = spot->endColumn();
 
-            // subtract one pixel from
-            // the right and bottom so that
-            // we do not overdraw adjacent
-            // hotspots
-            //
-            // subtracting one pixel from all sides also prevents an edge case where
-            // moving the mouse outside a link could still leave it underlined
-            // because the check below for the position of the cursor
-            // finds it on the border of the target area
-            QRect r;
-            r.setCoords(startColumn * _fontWidth + 1 + leftMargin,
-                                    line * _fontHeight + 1 + _topBaseMargin,
-                                    endColumn * _fontWidth - 1 + leftMargin,
-                                    (line + 1) * _fontHeight - 1 + _topBaseMargin);
-            // Underline link hotspots
-            if (spot->type() == Filter::HotSpot::Link) {
-                QFontMetrics metrics(font());
+            // 缓冲列区间（左闭右开）经显示段换算逐段绘制；经典模式单段恒等。
+            // 段矩形沿用原像素算式：右缘/下缘各收 1px，避免压到相邻热点，
+            // 也避免鼠标停在目标区边缘时命中判定的边界歧义
+            const auto segments = displaySegmentsForRange(line, startColumn, endColumn - 1);
+            for (const DisplaySegment &seg : segments) {
+                QRect r;
+                r.setCoords(seg.startColumn * _fontWidth + 1 + leftMargin,
+                            seg.row * _fontHeight + 1 + _topBaseMargin,
+                            (seg.endColumn + 1) * _fontWidth - 1 + leftMargin,
+                            (seg.row + 1) * _fontHeight - 1 + _topBaseMargin);
+                // Underline link hotspots
+                if (spot->type() == Filter::HotSpot::Link) {
+                    QFontMetrics metrics(font());
 
-                // find the baseline (which is the invisible line that the characters in
-                // the font sit on, with some having tails dangling below)
-                int baseline = r.bottom() - metrics.descent();
-                // find the position of the underline below that
-                int underlinePos = baseline + metrics.underlinePos();
-                if (region.contains(mapFromGlobal(QCursor::pos()))) {
-                    painter.drawLine(r.left(), underlinePos, r.right(), underlinePos);
+                    // find the baseline (which is the invisible line that the characters in
+                    // the font sit on, with some having tails dangling below)
+                    int baseline = r.bottom() - metrics.descent();
+                    // find the position of the underline below that
+                    int underlinePos = baseline + metrics.underlinePos();
+                    if (region.contains(mapFromGlobal(QCursor::pos()))) {
+                        painter.drawLine(r.left(), underlinePos, r.right(), underlinePos);
+                    }
                 }
-            }
-            // Marker hotspots simply have a transparent rectanglular shape
-            // drawn on top of them
-            else if (spot->type() == Filter::HotSpot::Marker) {
-                QColor markerColor = spot->color();
-                markerColor.setAlpha(120);
-                painter.fillRect(r, markerColor);
+                // Marker hotspots simply have a transparent rectanglular shape
+                // drawn on top of them
+                else if (spot->type() == Filter::HotSpot::Marker) {
+                    QColor markerColor = spot->color();
+                    markerColor.setAlpha(120);
+                    painter.fillRect(r, markerColor);
+                }
             }
         }
     }
@@ -2458,15 +2547,16 @@ void TerminalDisplay::redrawCursorOverImages(QPainter &paint)
         return;
     if (!screen->hasImages())
         return; // 无任何图像：不可能存在覆盖光标的 z>=0 放置（与下方"零开销短路"注释一致）
-    const QPoint cp = cursorPosition(); // 视图坐标
-    if (cp.x() < 0 || cp.x() >= _usedColumns || cp.y() < 0 || cp.y() >= _usedLines)
-        return;
-    const Character &ch = _image[loc(cp.x(), cp.y())];
+    const QPoint cp = cursorPosition(); // 缓冲窗口相对坐标
+    const QPoint dispCursor = mapBufferToDisplay(cp.x(), cp.y());
+    if (dispCursor.x() < 0 || dispCursor.y() >= _usedLines)
+        return; // 光标被水平视口/折叠段遮住
+    const Character &ch = _image[loc(dispCursor.x(), dispCursor.y())];
     if (!(ch.rendition & RE_CURSOR))
         return; // 光标隐藏（MODE_Cursor 关）或视图回看中
     const QPoint tL = contentsRect().topLeft();
-    const QRect cursorRect(_leftMargin + tL.x() + cp.x() * _fontWidth,
-                           _topMargin + tL.y() + cp.y() * _fontHeight,
+    const QRect cursorRect(_leftMargin + tL.x() + dispCursor.x() * _fontWidth,
+                           _topMargin + tL.y() + dispCursor.y() * _fontHeight,
                            _fontWidth, _fontHeight);
     // 仅当存在覆盖光标矩形的 z>=0 放置时才复绘（无图零开销短路）
     const int topLine = _screenWindow->currentLine();
@@ -2654,11 +2744,11 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             QRect textArea = calculateTextArea(tLx, tLy, x, y, len, textScale);
 
             // paint text fragment
-            // NoWrap 下 _image 已按 _hScrollOffset 合成，选区查询须换算回缓冲区列
+            // _image 已按行显示模式合成（NoWrap 平移/SoftWrap 折叠），
+            // 选区查询须换算回缓冲区坐标
+            const QPoint buf = mapDisplayToBuffer(x, y);
             drawTextFragment(paint, textArea, unistr, &_image[loc(x, y)], tooWide,
-                             _screenWindow->isSelected(
-                                     _lineWrapMode == QTermWidget::LineWrapMode::NoWrap
-                                             ? x + _hScrollOffset : x, y));
+                             _screenWindow->isSelected(buf.x(), buf.y()));
 
             _fixedFont = save__fixedFont;
 
@@ -2808,11 +2898,11 @@ void TerminalDisplay::drawContentsLegacy(QPainter &paint, const QRect &rect) {
             QRect textArea = calculateTextArea(tLx, tLy, x, y, len, textScale);
 
             // paint text fragment
-            // NoWrap 下 _image 已按 _hScrollOffset 合成，选区查询须换算回缓冲区列
+            // _image 已按行显示模式合成（NoWrap 平移/SoftWrap 折叠），
+            // 选区查询须换算回缓冲区坐标
+            const QPoint buf = mapDisplayToBuffer(x, y);
             drawTextFragment(paint, textArea, unistr, &_image[loc(x, y)], tooWide,
-                             _screenWindow->isSelected(
-                                     _lineWrapMode == QTermWidget::LineWrapMode::NoWrap
-                                             ? x + _hScrollOffset : x, y));
+                             _screenWindow->isSelected(buf.x(), buf.y()));
 
             _fixedFont = save__fixedFont;
 
@@ -2854,8 +2944,12 @@ QRect TerminalDisplay::imageToWidget(const QRect &imageArea) const {
 }
 
 void TerminalDisplay::updateCursor() {
-    QRect cursorRect = imageToWidget(QRect(cursorPosition(), QSize(1, 1)));
-    update(cursorRect);
+    // 缓冲坐标 → 显示坐标；光标被水平视口/折叠段遮住时不调度重绘
+    const QPoint buf = cursorPosition();
+    const QPoint disp = mapBufferToDisplay(buf.x(), buf.y());
+    if (disp.x() < 0)
+        return;
+    update(imageToWidget(QRect(disp, QSize(1, 1))));
 }
 
 void TerminalDisplay::blinkCursorEvent() {
@@ -2933,7 +3027,22 @@ void TerminalDisplay::scrollBarPositionChanged(int) {
     if (!_screenWindow)
         return;
 
-    _screenWindow->scrollTo(_scrollBar->value());
+    int target = _scrollBar->value();
+    if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap) {
+        // 滚动条值是显示行：前缀和扫描反推其落在哪个缓冲行的折叠段内
+        const QVector<int> lengths = allLineLengths();
+        int acc = 0;
+        int line = 0;
+        for (; line < lengths.size(); ++line) {
+            const int c = foldCountForLine(lengths[line], _columns);
+            if (target < acc + c)
+                break;
+            acc += c;
+        }
+        target = qMin(line, qMax(0, _screenWindow->lineCount() - _screenWindow->windowLines()));
+        // 已知简化：窗口顶落在该缓冲行首段，段内精度丢失（v1 接受）
+    }
+    _screenWindow->scrollTo(target);
 
     // if the thumb has been moved to the bottom of the _scrollBar then set
     // the display to automatically track new output,
@@ -3076,7 +3185,9 @@ void TerminalDisplay::mousePressEvent(QMouseEvent *ev) {
                 _screenWindow->clearSelection();
 
                 // emit clearSelectionSignal();
-                pos.ry() += _scrollBar->value();
+                // 窗口相对 → 全缓冲坐标用窗口顶缓冲行（SoftWrap 下滚动条值是
+                // 显示行，不能直接相加）；其余模式 currentLine 与滚动条值一致
+                pos.ry() += _screenWindow->currentLine();
                 _iPntSel = _pntSel = pos;
                 _actSel = 1; // left mouse button pressed but nothing selected yet.
             } else {
@@ -3185,31 +3296,21 @@ void TerminalDisplay::mouseMoveEvent(QMouseEvent *ev) {
     if (spot && spot->type() == Filter::HotSpot::Link) {
         QRegion previousHotspotArea = _mouseOverHotspotArea;
         _mouseOverHotspotArea = QRegion();
+        // 热点坐标为缓冲窗口坐标：逐缓冲行换算为显示段后拼区域
+        // （列区间左闭右开 → 段换算取闭区间 [start, end-1]），经典模式单段恒等
         QRect r;
-        if (spot->startLine() == spot->endLine()) {
-            r.setCoords(spot->startColumn() * _fontWidth + leftMargin,
-                                    spot->startLine() * _fontHeight + _topBaseMargin,
-                                    spot->endColumn() * _fontWidth + leftMargin,
-                                    (spot->endLine() + 1) * _fontHeight - 1 + _topBaseMargin);
-            _mouseOverHotspotArea |= r;
-        } else {
-            r.setCoords(spot->startColumn() * _fontWidth + leftMargin,
-                                    spot->startLine() * _fontHeight + _topBaseMargin,
-                                    _columns * _fontWidth - 1 + leftMargin,
-                                    (spot->startLine() + 1) * _fontHeight + _topBaseMargin);
-            _mouseOverHotspotArea |= r;
-            for (int line = spot->startLine() + 1; line < spot->endLine(); line++) {
-                r.setCoords(0 * _fontWidth + leftMargin,
-                                        line * _fontHeight + _topBaseMargin,
-                                        _columns * _fontWidth + leftMargin,
-                                        (line + 1) * _fontHeight + _topBaseMargin);
+        for (int line = spot->startLine(); line <= spot->endLine(); ++line) {
+            const int startCol = (line == spot->startLine()) ? spot->startColumn() : 0;
+            const int endCol =
+                    (line == spot->endLine()) ? spot->endColumn() - 1 : _columns - 1;
+            const auto segments = displaySegmentsForRange(line, startCol, endCol);
+            for (const DisplaySegment &seg : segments) {
+                r.setCoords(seg.startColumn * _fontWidth + leftMargin,
+                            seg.row * _fontHeight + _topBaseMargin,
+                            (seg.endColumn + 1) * _fontWidth + leftMargin,
+                            (seg.row + 1) * _fontHeight + _topBaseMargin);
                 _mouseOverHotspotArea |= r;
             }
-            r.setCoords(0 * _fontWidth + leftMargin,
-                                    spot->endLine() * _fontHeight + _topBaseMargin,
-                                    spot->endColumn() * _fontWidth + leftMargin,
-                                    (spot->endLine() + 1) * _fontHeight + _topBaseMargin);
-            _mouseOverHotspotArea |= r;
         }
 
         update(_mouseOverHotspotArea | previousHotspotArea);
@@ -3304,7 +3405,9 @@ void TerminalDisplay::extendSelection(const QPoint &position) {
     QPoint tL = contentsRect().topLeft();
     int tLx = tL.x();
     int tLy = tL.y();
-    int scroll = _scrollBar->value();
+    // 选区锚点坐标系换算以窗口顶缓冲行为准（SoftWrap 下滚动条值是显示行，
+    // 不能与缓冲行混加）；其余模式 currentLine 与滚动条值一致
+    const int scroll = _screenWindow->currentLine();
 
     // we're in the process of moving the mouse with the left button pressed
     // the mouse cursor will kept caught within the bounds of the text in
@@ -3341,9 +3444,9 @@ void TerminalDisplay::extendSelection(const QPoint &position) {
             charLine); // QPoint((pos.x()-tLx-_leftMargin+(_fontWidth/2))/_fontWidth,(pos.y()-tLy-_topMargin)/_fontHeight);
     QPoint ohere;
     QPoint _iPntSelCorr = _iPntSel;
-    _iPntSelCorr.ry() -= _scrollBar->value();
+    _iPntSelCorr.ry() -= _screenWindow->currentLine();
     QPoint _pntSelCorr = _pntSel;
-    _pntSelCorr.ry() -= _scrollBar->value();
+    _pntSelCorr.ry() -= _screenWindow->currentLine();
     bool swapping = false;
 
     if (_wordSelectionMode) {
@@ -3419,7 +3522,7 @@ void TerminalDisplay::extendSelection(const QPoint &position) {
         }
     }
 
-    if ((here == _pntSelCorr) && (scroll == _scrollBar->value()))
+    if ((here == _pntSelCorr) && (scroll == _screenWindow->currentLine()))
         return; // not moved
 
     if (here == ohere)
@@ -3435,7 +3538,7 @@ void TerminalDisplay::extendSelection(const QPoint &position) {
 
     _actSel = 2; // within selection
     _pntSel = here;
-    _pntSel.ry() += _scrollBar->value();
+    _pntSel.ry() += _screenWindow->currentLine();
 
     if (_columnSelectionMode && !_lineSelectionMode && !_wordSelectionMode) {
         _screenWindow->setSelectionEnd(here.x(), here.y());
@@ -3515,10 +3618,11 @@ void TerminalDisplay::getCharacterPosition(const QPointF &widgetPoint,
     if (column > _usedColumns)
         column = _usedColumns;
 
-    // NoWrap：显示列 + 水平偏移 = 缓冲区列；换算后可越过 _usedColumns，
-    // 以便选中/命中视口右侧被遮住的超宽内容
-    if (_lineWrapMode == QTermWidget::LineWrapMode::NoWrap)
-        column += _hScrollOffset;
+    // 换算为缓冲区坐标：NoWrap 加水平偏移（可越过 _usedColumns，以便选中/命中
+    // 视口右侧被遮住的超宽内容）；SoftWrap 经折叠段换算（列加段偏移、行换缓冲行）
+    const QPoint buf = mapDisplayToBuffer(column, line);
+    column = buf.x();
+    line = buf.y();
 }
 
 void TerminalDisplay::updateFilters() {
@@ -3558,7 +3662,7 @@ void TerminalDisplay::mouseDoubleClickEvent(QMouseEvent *ev) {
 
     _screenWindow->clearSelection();
     _iPntSel = pos;
-    _iPntSel.ry() += _scrollBar->value();
+    _iPntSel.ry() += _screenWindow->currentLine();
 
     _wordSelectionMode = true;
     _actSel = 2; // within selection
@@ -3580,6 +3684,9 @@ void TerminalDisplay::mouseDoubleClickEvent(QMouseEvent *ev) {
 // Moving left/up from the line containing pnt, return the starting offset
 // point which the given line is continuously wrapped.
 // (top left corner = 0,0; previous line not visible = 0,-1)
+// SoftWrap 适配：pnt 已是缓冲窗口相对坐标（getCharacterPosition 出口经
+// mapDisplayToBuffer 换算），_lineProperties 按缓冲行索引、LINE_WRAPPED 只对
+// 硬换行生效，故本函数两模式共用同一逻辑；起点列恒为 0（折叠段首段段首）。
 QPoint TerminalDisplay::findLineStart(const QPoint &pnt) {
     const int visibleScreenLines = _lineProperties.size();
     const int topVisibleLine = _screenWindow->currentLine();
@@ -3621,18 +3728,26 @@ QPoint TerminalDisplay::findLineEnd(const QPoint &pnt) {
 
     QVector<LineProperty> lineProperties = _lineProperties;
 
+    // SoftWrap：终点列为该缓冲行有效长度结尾（折叠段末段末尾）；
+    // 其余模式为显示网格末列。LINE_WRAPPED 判定按缓冲行索引，只对硬换行生效
+    const auto endColumnFor = [&](int absLine) {
+        return _lineWrapMode == QTermWidget::LineWrapMode::SoftWrap
+                       ? qMax(0, screen->getLineLength(absLine) - 1)
+                       : _columns - 1;
+    };
+
     while (lineInHistory < maxY) {
         for (; line < lineProperties.count() && lineInHistory < maxY; line++, lineInHistory++) {
             // Does current line wrap around?
             if ((lineProperties[line] & LINE_WRAPPED) == 0) {
-                return {_columns - 1, lineInHistory - topVisibleLine};
+                return {endColumnFor(lineInHistory), lineInHistory - topVisibleLine};
             }
         }
 
         line = 0;
         lineProperties = screen->getLineProperties(lineInHistory, qMin(lineInHistory + visibleScreenLines, maxY));
     }
-    return {_columns - 1, lineInHistory - topVisibleLine};
+    return {endColumnFor(lineInHistory), lineInHistory - topVisibleLine};
 }
 
 QPoint TerminalDisplay::findWordStart(const QPoint &pnt) {
@@ -3641,8 +3756,18 @@ QPoint TerminalDisplay::findWordStart(const QPoint &pnt) {
     Screen *screen = _screenWindow->screen();
     Character *image = _image;
     Character *tmp_image = nullptr;
-    int imgLine = pnt.y();
-    int x = pnt.x();
+
+    // SoftWrap：pnt 为缓冲窗口相对坐标，先换算到显示网格（扫描在合成后的
+    // _image 上进行，折叠段在显示网格中天然连续）；不可见时防御性原样返回
+    QPoint startPnt = pnt;
+    if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap) {
+        startPnt = mapBufferToDisplay(pnt.x(), pnt.y());
+        if (startPnt.x() < 0)
+            return pnt;
+    }
+
+    int imgLine = startPnt.y();
+    int x = startPnt.x();
     int y = imgLine + firstVisibleLine;
     QVector<LineProperty> lineProperties = _lineProperties;
     const int imageSize = regSize * _columns;
@@ -3661,6 +3786,20 @@ QPoint TerminalDisplay::findWordStart(const QPoint &pnt) {
     int imgLoc = loc(x, imgLine);
     const QChar selClass = charClass(image[imgLoc]);
 
+    // 行 row 是否延续自上一显示行：经典/NoWrap 看上一缓冲行 LINE_WRAPPED
+    // （仅硬换行）；SoftWrap 额外把同缓冲行的相邻折叠段视为延续
+    const auto continuesFromPrev = [&](int row) {
+        if (_lineWrapMode != QTermWidget::LineWrapMode::SoftWrap)
+            return (lineProperties[row - 1] & LINE_WRAPPED) != 0;
+        if (row >= _displayRows.size())
+            return false;
+        if (_displayRows[row].bufferLine == _displayRows[row - 1].bufferLine)
+            return true;
+        const int prevBuf = _displayRows[row - 1].bufferLine;
+        return prevBuf < lineProperties.count()
+               && (lineProperties[prevBuf] & LINE_WRAPPED) != 0;
+    };
+
     while (true) {
         for (;; imgLoc--, x--) {
             if (imgLoc < 1) {
@@ -3675,7 +3814,7 @@ QPoint TerminalDisplay::findWordStart(const QPoint &pnt) {
                 goto out;
             } else if (imgLine > 0) {
                 // not the first line in the session
-                if ((lineProperties[imgLine - 1] & LINE_WRAPPED) != 0) {
+                if (continuesFromPrev(imgLine)) {
                     // have continuation on prev line
                     if (charClass(image[imgLoc - 1]) == selClass) {
                         x = _columns;
@@ -3685,8 +3824,9 @@ QPoint TerminalDisplay::findWordStart(const QPoint &pnt) {
                     }
                 }
                 goto out;
-            } else if (y > 0) {
+            } else if (y > 0 && _lineWrapMode != QTermWidget::LineWrapMode::SoftWrap) {
                 // want more data, but need to fetch new region
+                // （SoftWrap v1 已知简化：不做跨区域取词扫描，窗口边缘即停）
                 break;
             } else {
                 goto out;
@@ -3713,14 +3853,27 @@ QPoint TerminalDisplay::findWordStart(const QPoint &pnt) {
     }
 out:
     delete[] tmp_image;
+    // SoftWrap：扫描结果为显示网格坐标，换算回缓冲窗口相对坐标
+    if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap)
+        return mapDisplayToBuffer(x, imgLine);
     return {x, y - firstVisibleLine};
 }
 
 QPoint TerminalDisplay::findWordEnd(const QPoint &pnt) {
     const int regSize = qMax(_screenWindow->windowLines(), 10);
     const int firstVisibleLine = _screenWindow->currentLine();
-    int imgLine = pnt.y();
-    int x = pnt.x();
+
+    // SoftWrap：pnt 为缓冲窗口相对坐标，先换算到显示网格（同 findWordStart）；
+    // 不可见时防御性原样返回
+    QPoint startPnt = pnt;
+    if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap) {
+        startPnt = mapBufferToDisplay(pnt.x(), pnt.y());
+        if (startPnt.x() < 0)
+            return pnt;
+    }
+
+    int imgLine = startPnt.y();
+    int x = startPnt.x();
     int y = imgLine + firstVisibleLine;
     QVector<LineProperty> lineProperties = _lineProperties;
     Screen *screen = _screenWindow->screen();
@@ -3744,6 +3897,25 @@ QPoint TerminalDisplay::findWordEnd(const QPoint &pnt) {
     int imgLoc = loc(x, imgLine);
     const QChar selClass = charClass(image[imgLoc]);
 
+    // 是否存在下一扫描行：经典/NoWrap 按属性表行数，SoftWrap 按 _displayRows
+    const auto hasNextRow = [&](int row, int propCount) {
+        if (_lineWrapMode != QTermWidget::LineWrapMode::SoftWrap)
+            return row < propCount - 1;
+        return row + 1 < _displayRows.size();
+    };
+    // 行 row 是否延续到下一显示行：经典/NoWrap 看本缓冲行 LINE_WRAPPED
+    // （仅硬换行）；SoftWrap 额外把同缓冲行的相邻折叠段视为延续
+    const auto continuesToNext = [&](int row, int propCount) {
+        if (_lineWrapMode != QTermWidget::LineWrapMode::SoftWrap)
+            return (lineProperties[row] & LINE_WRAPPED) != 0;
+        if (row + 1 >= _displayRows.size())
+            return false;
+        if (_displayRows[row + 1].bufferLine == _displayRows[row].bufferLine)
+            return true;
+        const int curBuf = _displayRows[row].bufferLine;
+        return curBuf < propCount && (lineProperties[curBuf] & LINE_WRAPPED) != 0;
+    };
+
     while (true) {
         const int lineCount = lineProperties.count();
         for (;; imgLoc++, x++) {
@@ -3756,8 +3928,8 @@ QPoint TerminalDisplay::findWordEnd(const QPoint &pnt) {
                     continue;
                 }
                 goto out;
-            } else if (imgLine < lineCount - 1) {
-                if (((lineProperties[imgLine] & LINE_WRAPPED) != 0) &&
+            } else if (hasNextRow(imgLine, lineCount)) {
+                if (continuesToNext(imgLine, lineCount) &&
                     charClass(image[imgLoc + 1]) == selClass &&
                     // A colon right before whitespace is never part of a word
                     !(image[imgLoc + 1].character == ':' &&
@@ -3769,12 +3941,13 @@ QPoint TerminalDisplay::findWordEnd(const QPoint &pnt) {
                     continue;
                 }
                 goto out;
-            } else if (y < maxY) {
+            } else if (y < maxY && _lineWrapMode != QTermWidget::LineWrapMode::SoftWrap) {
                 if (imgLine < lineCount &&
                     ((lineProperties[imgLine] & LINE_WRAPPED) == 0))
                 {
                     goto out;
                 }
+                // （SoftWrap v1 已知简化：不做跨区域取词扫描，窗口边缘即停）
                 break;
             } else {
                 goto out;
@@ -3796,7 +3969,7 @@ out:
     // In word selection mode don't select @ (64) if at end of word.
     if (((image[imgLoc].rendition & RE_EXTENDED_CHAR) == 0) &&
         (image[imgLoc].character == '@') &&
-        (y > pnt.y() || x > pnt.x()))
+        (y > startPnt.y() || x > startPnt.x()))
     {
         if (x > 0) {
             x--;
@@ -3806,6 +3979,9 @@ out:
     }
     delete[] tmp_image;
 
+    // SoftWrap：扫描结果为显示网格坐标，换算回缓冲窗口相对坐标
+    if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap)
+        return mapDisplayToBuffer(x, y);
     return {x, y};
 }
 
@@ -3888,7 +4064,7 @@ void TerminalDisplay::mouseTripleClickEvent(QMouseEvent *ev) {
 
     setSelection(_screenWindow->selectedText(_preserveLineBreaks));
 
-    _iPntSel.ry() += _scrollBar->value();
+    _iPntSel.ry() += _screenWindow->currentLine();
 }
 
 bool TerminalDisplay::focusNextPrevChild(bool next) {
@@ -4153,16 +4329,20 @@ void TerminalDisplay::inputMethodEvent(QInputMethodEvent *event) {
 QVariant TerminalDisplay::inputMethodQuery(Qt::InputMethodQuery query) const {
     const QPoint cursorPos =
             _screenWindow ? _screenWindow->cursorPosition() : QPoint(0, 0);
+    // 缓冲坐标 → 显示坐标；不可见时各分支退回空值/缓冲原值兜底
+    const QPoint disp = mapBufferToDisplay(cursorPos.x(), cursorPos.y());
     switch (query) {
     case Qt::ImCursorRectangle:
-        return imageToWidget(QRect(cursorPos.x(), cursorPos.y(), 1, 1));
+        if (disp.x() < 0)
+            return QRect();
+        return imageToWidget(QRect(disp.x(), disp.y(), 1, 1));
         break;
     case Qt::ImFont:
         return font();
         break;
     case Qt::ImCursorPosition:
         // return the cursor position within the current line
-        return cursorPos.x();
+        return disp.x() < 0 ? cursorPos.x() : disp.x();
         break;
     case Qt::ImSurroundingText: {
         // return the text from the current line
@@ -4170,7 +4350,8 @@ QVariant TerminalDisplay::inputMethodQuery(Qt::InputMethodQuery query) const {
         QTextStream stream(&lineText);
         PlainTextDecoder decoder;
         decoder.begin(&stream);
-        decoder.decodeLine(&_image[loc(0, cursorPos.y())], _usedColumns, 0);
+        decoder.decodeLine(&_image[loc(0, disp.y() < 0 ? cursorPos.y() : disp.y())],
+                           _usedColumns, 0);
         decoder.end();
         return lineText;
     } break;
