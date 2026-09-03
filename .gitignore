@@ -6,3 +6,4 @@ build*
 *.pro.user
 
 !build.ps1
+.worktrees/
