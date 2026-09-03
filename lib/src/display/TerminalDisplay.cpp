@@ -1571,11 +1571,14 @@ void TerminalDisplay::updateImage() {
     if (_lineWrapMode == QTermWidget::LineWrapMode::NoWrap && _hScrollBar) {
         const int range = qMax(0, maxVisibleLineWidth() - _columns);
         const bool wasVisible = _hScrollBar->isVisible();
-        _hScrollBar->setRange(0, range);
-        if (_hScrollOffset > range) {
+        // 先钳偏移再调范围：range 缩小时 setRange 内部会先把 value 钳到新
+        // 上界并发出 valueChanged；此时 _hScrollOffset 已同步为新值，
+        // lambda 比对相等后早退，不会在本段中途重入 updateImage
+        if (_hScrollOffset > range)
             _hScrollOffset = range;
-            _hScrollBar->setValue(range);   // 与 _hScrollOffset 已同步，lambda 早退不重入
-        }
+        _hScrollBar->setRange(0, range);
+        if (_hScrollBar->value() != _hScrollOffset)
+            _hScrollBar->setValue(_hScrollOffset);   // 同上：已同步，lambda 早退
         _hScrollBar->setVisible(range > 0);
         if (wasVisible != _hScrollBar->isVisible())
             updateImageSize();   // 显隐切换改变可用高度，重算几何
