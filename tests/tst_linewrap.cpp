@@ -1,6 +1,7 @@
 #include <QtTest>
 #include "Screen.h"
 #include "ScreenWindow.h"
+#include "DisplayLayout.h"
 
 /**
  * @brief 行显示模式（软折叠/横向滚动条）回归测试。
@@ -12,6 +13,9 @@ private slots:
     void screenLineLength();
     void screenLineSlice();
     void screenWindowForwarding();
+    void foldCount();
+    void foldMap();
+    void displayRowOffset();
 };
 
 void TestLineWrap::screenLineLength()
@@ -61,6 +65,40 @@ void TestLineWrap::screenWindowForwarding()
     window.getWindowLineSlice(0, 0, 2, dest);
     QCOMPARE(dest[0].character, U'x');
     QCOMPARE(dest[1].character, U'y');
+}
+
+void TestLineWrap::foldCount()
+{
+    QCOMPARE(foldCountForLine(0, 10), 1);   // 空行计 1 段
+    QCOMPARE(foldCountForLine(5, 10), 1);
+    QCOMPARE(foldCountForLine(10, 10), 1);  // 恰好整除
+    QCOMPARE(foldCountForLine(11, 10), 2);
+    QCOMPARE(foldCountForLine(25, 10), 3);
+    QCOMPARE(foldCountForLine(5, 0), 1);    // 退化列数防御
+}
+
+void TestLineWrap::foldMap()
+{
+    // 窗口 3 行：长度 25、3、0；可见显示行 5
+    const QVector<int> lengths = {25, 3, 0};
+    const auto rows = buildFoldMap(lengths, 10, 5);
+    QCOMPARE(rows.size(), 5);
+    QCOMPARE(rows[0], (DisplayRow{0, 0}));
+    QCOMPARE(rows[1], (DisplayRow{0, 10}));
+    QCOMPARE(rows[2], (DisplayRow{0, 20}));
+    QCOMPARE(rows[3], (DisplayRow{1, 0}));
+    QCOMPARE(rows[4], (DisplayRow{2, 0}));
+    // maxRows 截断：只取前 2 个显示行
+    QCOMPARE(buildFoldMap(lengths, 10, 2).size(), 2);
+}
+
+void TestLineWrap::displayRowOffset()
+{
+    // 全缓冲前缀和：行 0(25)→3 段，行 1(3)→1 段，行 2(0)→1 段
+    const QVector<int> lengths = {25, 3, 0};
+    QCOMPARE(displayRowOffsetOfLine(lengths, 10, 0), 0);
+    QCOMPARE(displayRowOffsetOfLine(lengths, 10, 1), 3);
+    QCOMPARE(displayRowOffsetOfLine(lengths, 10, 2), 4);
 }
 
 QTEST_GUILESS_MAIN(TestLineWrap)
