@@ -478,6 +478,12 @@ public:
     QRegion lastDirtyRegion() const { return _lastDirtyRegion; }
 
     /**
+     * @brief 仅供测试：读取 _image 中 (x,y) 处的字符。
+     * @note 测试观测钩子；内部接口，不进公共头 qtermwidget.h。
+     */
+    Character characterAtForTest(int x, int y) const { return _image[loc(x, y)]; }
+
+    /**
      * Sets the terminal screen section which is displayed in this widget.
      * When updateImage() is called, the display fetches the latest character image from the
      * the associated terminal screen window.
@@ -910,6 +916,18 @@ private:
     void propagateSize();
     void updateImageSize();
     void makeImage();
+
+    /**
+     * @brief 按当前模式把窗口内容合成到 dest（_lines × _columns 网格）。
+     * @return true 表示已合成；false 表示调用方应走 getImage() 快路径。
+     */
+    bool composeViewImage(Character *dest);
+    /** @brief SoftWrap：重建 _displayRows 并返回全缓冲各有效行长度。 */
+    QVector<int> allLineLengths() const;
+    /** @brief 可见窗口各行有效长度（窗口相对 0..windowLines-1）。 */
+    QVector<int> windowLineLengths() const;
+    /** @brief 当前可见内容的最大有效行宽。 */
+    int maxVisibleLineWidth() const;
 
     void paintFilters(QPainter& painter);
 

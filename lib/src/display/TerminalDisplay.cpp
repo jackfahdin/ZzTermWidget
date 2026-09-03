@@ -1429,6 +1429,71 @@ void TerminalDisplay::processFilters() {
     update(preUpdateHotSpots | postUpdateHotSpots);
 }
 
+QVector<int> TerminalDisplay::windowLineLengths() const {
+    QVector<int> lengths;
+    if (!_screenWindow)
+        return lengths;
+    const int n = _screenWindow->windowLines();
+    lengths.reserve(n);
+    for (int i = 0; i < n; ++i)
+        lengths.append(_screenWindow->windowLineLength(i));
+    return lengths;
+}
+
+int TerminalDisplay::maxVisibleLineWidth() const {
+    int maxLen = 0;
+    for (int len : windowLineLengths())
+        maxLen = qMax(maxLen, len);
+    return maxLen;
+}
+
+QVector<int> TerminalDisplay::allLineLengths() const {
+    QVector<int> lengths;
+    if (!_screenWindow)
+        return lengths;
+    Screen *screen = _screenWindow->screen();
+    const int total = screen->getHistLines() + screen->getLines();
+    lengths.reserve(total);
+    for (int i = 0; i < total; ++i)
+        lengths.append(screen->getLineLength(i));
+    return lengths;
+}
+
+bool TerminalDisplay::composeViewImage(Character *dest) {
+    if (!_screenWindow)
+        return false;
+    const int winLines = _screenWindow->windowLines();
+
+    if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap) {
+        _displayRows = buildFoldMap(windowLineLengths(), _columns, _lines);
+        for (int y = 0; y < _lines; ++y) {
+            if (y < _displayRows.size()) {
+                const DisplayRow &row = _displayRows[y];
+                _screenWindow->getWindowLineSlice(row.bufferLine, row.columnOffset,
+                                                  _columns, dest + y * _columns);
+            } else {
+                for (int x = 0; x < _columns; ++x)
+                    dest[y * _columns + x] = Character();   // 默认空格
+            }
+        }
+        return true;
+    }
+
+    // NoWrap：存在超宽行或已偏移时按切片合成（含水平偏移）
+    const int maxLen = maxVisibleLineWidth();
+    if (maxLen <= _columns && _hScrollOffset == 0)
+        return false;   // 走 getImage() 快路径
+    for (int y = 0; y < _lines; ++y) {
+        if (y < winLines)
+            _screenWindow->getWindowLineSlice(y, _hScrollOffset, _columns,
+                                              dest + y * _columns);
+        else
+            for (int x = 0; x < _columns; ++x)
+                dest[y * _columns + x] = Character();
+    }
+    return true;
+}
+
 void TerminalDisplay::updateImage() {
     if (!_screenWindow)
         return;
@@ -1454,9 +1519,29 @@ void TerminalDisplay::updateImage() {
         updateImageSize();
     }
 
-    Character *const newimg = _screenWindow->getImage();
+    // 行显示模式视图合成：SoftWrap 或存在超宽行/水平偏移时，把窗口各行切片
+    // 拼成 _lines × _columns 网格作为比对源；否则保留 getImage() 快路径
+    Character *composed = nullptr;
+    Character *newimg = nullptr;
+    if (_lineWrapMode != QTermWidget::LineWrapMode::NoWrap || _hScrollOffset > 0
+        || maxVisibleLineWidth() > _columns) {
+        composed = new Character[_lines * _columns];
+        if (composeViewImage(composed))
+            newimg = composed;
+        else {
+            delete[] composed;
+            composed = nullptr;
+        }
+    }
+    if (!newimg)
+        newimg = _screenWindow->getImage();
     int lines = _screenWindow->windowLines();
     int columns = _screenWindow->windowColumns();
+    if (composed) {
+        // 合成网格的行列数即显示网格，脏区比对 stride 用 _columns（而非 windowColumns()）
+        lines = _lines;
+        columns = _columns;
+    }
 
     setScroll(_screenWindow->currentLine(), _screenWindow->lineCount());
 
@@ -1714,6 +1799,8 @@ void TerminalDisplay::updateImage() {
     _lastDirtyRegion = dirtyRegion; // 测试/benchmark 观测钩子：记录本次帧脏区
     _lastImageScreen = scr; // 备选屏切换帧检测（快路径回退条件）
     update(dirtyRegion);
+
+    delete[] composed; // 合成网格已完成比对与 _image 同步，此处释放
 
     if (_hasBlinker && !_blinkTimer->isActive())
         _blinkTimer->start(TEXT_BLINK_DELAY);

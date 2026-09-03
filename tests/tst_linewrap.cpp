@@ -1,8 +1,34 @@
 #include <QtTest>
+#include <QFontDatabase>
 #include "Screen.h"
 #include "ScreenWindow.h"
+#include "Vt102Emulation.h"
+#include "History.h"
+#include "TerminalDisplay.h"
 #include "DisplayLayout.h"
 #include "qtermwidget.h"
+
+/**
+ * @brief 选一个真实存在的等宽字体（跨平台测试环境用）。
+ * @return 按平台习惯优先 DejaVu Sans Mono/Menlo/Consolas/Courier New，
+ *         再退任意 fixedPitch 族，最后回退系统 FixedFont。
+ */
+static QFont monospaceFont()
+{
+    static const QStringList preferred = {
+        QStringLiteral("DejaVu Sans Mono"), QStringLiteral("Menlo"),
+        QStringLiteral("Consolas"),         QStringLiteral("Courier New"),
+    };
+    QFontDatabase db;
+    const QStringList available = db.families();
+    for (const QString &name : preferred)
+        if (available.contains(name))
+            return QFont(name);
+    for (const QString &name : available)
+        if (db.isFixedPitch(name))
+            return QFont(name);
+    return QFontDatabase::systemFont(QFontDatabase::FixedFont);
+}
 
 /**
  * @brief 行显示模式（软折叠/横向滚动条）回归测试。
@@ -18,6 +44,7 @@ private slots:
     void foldMap();
     void displayRowOffset();
     void lineWrapModeApi();
+    void softWrapComposition();
 };
 
 void TestLineWrap::screenLineLength()
@@ -111,6 +138,36 @@ void TestLineWrap::lineWrapModeApi()
     QCOMPARE(widget.lineWrapMode(), QTermWidget::LineWrapMode::SoftWrap);
     widget.setLineWrapMode(QTermWidget::LineWrapMode::NoWrap);
     QCOMPARE(widget.lineWrapMode(), QTermWidget::LineWrapMode::NoWrap);
+}
+
+void TestLineWrap::softWrapComposition()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));   // 保留滚出屏幕的行，历史+屏幕共同容纳长行
+    emu.setImageSize(2, 10);              // 缓冲 2 行 × 10 列
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格固定为 10 列 × 5 行（左右/上下基础边距各 1px 计入 resize 尺寸）
+    display.resize(10 * display.fontWidth() + 2, 5 * display.fontHeight() + 2);
+
+    // 输出一条 25 字符的长行：在 10 列缓冲中折成 3 个缓冲区行
+    // （"abcdefghij"/"klmnopqrst"/"uvwxy"，历史与屏幕共同容纳），
+    // 软折叠视图下每个缓冲区行各占一个显示行
+    const QByteArray text("abcdefghijklmnopqrstuvwxy");
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);   // 等待 outputChanged 驱动 updateImage
+
+    // 合成后显示行 0/1/2 首字符应为三段切片的首字符
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'a');
+    QCOMPARE(display.characterAtForTest(0, 1).character, U'k');
+    QCOMPARE(display.characterAtForTest(0, 2).character, U'u');
 }
 
 QTEST_MAIN(TestLineWrap)
