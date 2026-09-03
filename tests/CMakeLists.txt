@@ -11,6 +11,7 @@ set(QTERMWIDGET_TESTS
     tst_rendering
     tst_sixel
     tst_kittygraphics
+    tst_linewrap
 )
 
 foreach(test_name IN LISTS QTERMWIDGET_TESTS)

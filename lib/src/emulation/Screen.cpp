@@ -501,6 +501,36 @@ void Screen::getImage(Character *dest, int size, int startLine,
         dest[cursorIndex].rendition |= RE_CURSOR;
 }
 
+int Screen::getLineLength(int line) const {
+    const int histLines = getHistLines();
+    if (line < 0 || line >= histLines + getLines())
+        return 0;
+    if (line < histLines)
+        return history->getLineLen(line);
+    return screenLines[line - histLines].count();
+}
+
+void Screen::getLineSlice(int line, int startCol, int count, Character* dest) const {
+    for (int i = 0; i < count; ++i)
+        dest[i] = defaultChar;
+    const int histLines = getHistLines();
+    if (line < 0 || line >= histLines + getLines() || startCol < 0 || count <= 0)
+        return;
+    if (line < histLines) {
+        const int copyCount = qMin(count, history->getLineLen(line) - startCol);
+        if (copyCount > 0)
+            history->getCells(line, startCol, copyCount, dest);
+    } else {
+        const ImageLine &imgLine = screenLines[line - histLines];
+        const int copyCount = qMin(count, imgLine.count() - startCol);
+        for (int i = 0; i < copyCount; ++i)
+            dest[i] = imgLine[startCol + i];
+    }
+    // 光标高亮，与 getImage 的 RE_CURSOR 行为一致
+    if (line - histLines == cuY && cuX >= startCol && cuX < startCol + count)
+        dest[cuX - startCol].rendition |= RE_CURSOR;
+}
+
 QVector<LineProperty> Screen::getLineProperties(int startLine,
                                                                                                 int endLine) const {
     Q_ASSERT(startLine >= 0);

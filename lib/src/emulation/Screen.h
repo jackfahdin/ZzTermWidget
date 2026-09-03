@@ -608,6 +608,20 @@ public:
     void getImage( Character* dest , int size , int startLine , int endLine ) const;
 
     /**
+     * @brief 返回绝对行号对应行的有效长度（行尾未写入部分不计）。
+     * @param line 绝对行号（0 为历史最早行）。
+     * @return 有效长度；行号越界返回 0。
+     */
+    int getLineLength(int line) const;
+
+    /**
+     * @brief 把绝对行号 line 的 [startCol, startCol+count) 字符拷入 dest。
+     * @note 越出有效长度的格补 defaultChar；光标所在格打 RE_CURSOR（与 getImage 一致）。
+     *       不做选区反色——选区高亮由绘制层经 isSelected 处理，避免双重反转。
+     */
+    void getLineSlice(int line, int startCol, int count, Character* dest) const;
+
+    /**
      * Returns the additional attributes associated with lines in the image.
      * The most important attribute is LINE_WRAPPED which specifies that the
      * line is wrapped,
