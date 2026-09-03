@@ -391,6 +391,17 @@ TerminalDisplay::TerminalDisplay(QWidget *parent)
     // TerminalDisplay::setScrollBarPosition(ScrollBarPosition position)
     _scrollBar->hide();
 
+    // NoWrap 模式的横向滚动条：存在超宽行时按需出现，value 即水平视口偏移（列）
+    _hScrollBar = new QScrollBar(Qt::Horizontal, this);
+    _hScrollBar->setAutoFillBackground(true);
+    connect(_hScrollBar, &QScrollBar::valueChanged, this, [this](int value) {
+        if (_hScrollOffset == value)
+            return;
+        _hScrollOffset = value;
+        updateImage();   // 偏移变化：合成路径重建，整屏重绘
+    });
+    _hScrollBar->hide();
+
     // setup timers for blinking cursor and text
     _blinkTimer = new QTimer(this);
     connect(_blinkTimer, &QTimer::timeout, this, &TerminalDisplay::blinkEvent);
@@ -1509,6 +1520,17 @@ void TerminalDisplay::updateImage() {
     // can simply be moved up or down
     const int scrollLines = _screenWindow->scrollCount();
     const QRect scrollWindowRegion = _screenWindow->scrollRegion();
+
+    // 新输出到达（本帧发生滚动）且垂直滚动条位于底部时，水平偏移自动回零，
+    // 把视口拉回左边缘；回看历史（不在底部）时不回零。
+    // setValue 经 valueChanged 同步 _hScrollOffset 并重入 updateImage，
+    // 本帧直接交给重入调用完成，避免继续用过期偏移的图像数据比对
+    if (scrollLines > 0 && _scrollBar->value() == _scrollBar->maximum()
+        && _hScrollBar && _hScrollOffset != 0) {
+        _hScrollBar->setValue(0);
+        return;
+    }
+
     scrollImage(scrollLines, scrollWindowRegion);
     _screenWindow->resetScrollCount();
 
@@ -1544,6 +1566,22 @@ void TerminalDisplay::updateImage() {
     }
 
     setScroll(_screenWindow->currentLine(), _screenWindow->lineCount());
+
+    // 横向滚动条：仅 NoWrap 模式、存在超宽行时出现
+    if (_lineWrapMode == QTermWidget::LineWrapMode::NoWrap && _hScrollBar) {
+        const int range = qMax(0, maxVisibleLineWidth() - _columns);
+        const bool wasVisible = _hScrollBar->isVisible();
+        _hScrollBar->setRange(0, range);
+        if (_hScrollOffset > range) {
+            _hScrollOffset = range;
+            _hScrollBar->setValue(range);   // 与 _hScrollOffset 已同步，lambda 早退不重入
+        }
+        _hScrollBar->setVisible(range > 0);
+        if (wasVisible != _hScrollBar->isVisible())
+            updateImageSize();   // 显隐切换改变可用高度，重算几何
+    } else if (_hScrollBar) {
+        _hScrollBar->hide();
+    }
 
     Q_ASSERT(this->_usedLines <= this->_lines);
     Q_ASSERT(this->_usedColumns <= this->_columns);
@@ -2613,7 +2651,11 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             QRect textArea = calculateTextArea(tLx, tLy, x, y, len, textScale);
 
             // paint text fragment
-            drawTextFragment(paint, textArea, unistr, &_image[loc(x, y)], tooWide, _screenWindow->isSelected(x, y));
+            // NoWrap 下 _image 已按 _hScrollOffset 合成，选区查询须换算回缓冲区列
+            drawTextFragment(paint, textArea, unistr, &_image[loc(x, y)], tooWide,
+                             _screenWindow->isSelected(
+                                     _lineWrapMode == QTermWidget::LineWrapMode::NoWrap
+                                             ? x + _hScrollOffset : x, y));
 
             _fixedFont = save__fixedFont;
 
@@ -2763,7 +2805,11 @@ void TerminalDisplay::drawContentsLegacy(QPainter &paint, const QRect &rect) {
             QRect textArea = calculateTextArea(tLx, tLy, x, y, len, textScale);
 
             // paint text fragment
-            drawTextFragment(paint, textArea, unistr, &_image[loc(x, y)], tooWide, _screenWindow->isSelected(x, y));
+            // NoWrap 下 _image 已按 _hScrollOffset 合成，选区查询须换算回缓冲区列
+            drawTextFragment(paint, textArea, unistr, &_image[loc(x, y)], tooWide,
+                             _screenWindow->isSelected(
+                                     _lineWrapMode == QTermWidget::LineWrapMode::NoWrap
+                                             ? x + _hScrollOffset : x, y));
 
             _fixedFont = save__fixedFont;
 
@@ -3465,6 +3511,11 @@ void TerminalDisplay::getCharacterPosition(const QPointF &widgetPoint,
     // column (or left-most for right-to-left input)
     if (column > _usedColumns)
         column = _usedColumns;
+
+    // NoWrap：显示列 + 水平偏移 = 缓冲区列；换算后可越过 _usedColumns，
+    // 以便选中/命中视口右侧被遮住的超宽内容
+    if (_lineWrapMode == QTermWidget::LineWrapMode::NoWrap)
+        column += _hScrollOffset;
 }
 
 void TerminalDisplay::updateFilters() {
@@ -3758,6 +3809,16 @@ out:
 void TerminalDisplay::wheelEvent(QWheelEvent *ev) {
     if (ev->angleDelta().y() == 0)
         return;
+
+    // NoWrap：Shift+滚轮驱动横向滚动条（每格 4 列）
+    if (_lineWrapMode == QTermWidget::LineWrapMode::NoWrap
+        && (ev->modifiers() & Qt::ShiftModifier)
+        && _hScrollBar && _hScrollBar->isVisible()) {
+        const int steps = ev->angleDelta().y() / 120;
+        _hScrollBar->setValue(_hScrollBar->value() - steps * 4);
+        ev->accept();
+        return;
+    }
 
     if (_mouseMarks && _scrollBar->maximum() > 0) {
         // If the program running in the terminal is not interested in
@@ -4055,6 +4116,10 @@ void TerminalDisplay::keyPressEvent(QKeyEvent *event) {
             _cursorBlinking = false;
     }
 
+    // 打字即回到光标处：任何键盘输入把水平视口偏移拉回 0
+    if (_hScrollBar && _hScrollBar->isVisible() && _hScrollOffset != 0)
+        _hScrollBar->setValue(0);
+
     emit keyPressedSignal(event, false);
 
     event->accept();
@@ -4259,6 +4324,15 @@ void TerminalDisplay::calcGeometry() {
     _contentHeight =
             contentsRect().height() - 2 * _topBaseMargin + /* mysterious */ 1;
 
+    // 横向滚动条可见时占据内容区底部一条高度，可用内容高度相应扣除；
+    // _lines 在此之后由 _contentHeight / _fontHeight 得出，自动少一行
+    if (_hScrollBar && _hScrollBar->isVisible()) {
+        _hScrollBar->resize(_contentWidth, _hScrollBar->sizeHint().height());
+        _hScrollBar->move(_leftMargin, contentsRect().bottom() - _topBaseMargin
+                                       - _hScrollBar->height() + 1);
+        _contentHeight -= _hScrollBar->height();
+    }
+
     if (!_isFixedSize) {
         // ensure that display is always at least one column wide
         _columns = qMax(1, _contentWidth / _fontWidth);
@@ -4297,10 +4371,15 @@ void TerminalDisplay::setSize(int columns, int lines) {
                     : _scrollBar->sizeHint().width();
     int horizontalMargin = 2 * _leftBaseMargin;
     int verticalMargin = 2 * _topBaseMargin;
+    // 与 calcGeometry 同步：横向滚动条可见时为其预留底部高度
+    const int hScrollBarHeight =
+            (_hScrollBar && _hScrollBar->isVisible())
+                    ? _hScrollBar->sizeHint().height()
+                    : 0;
 
     QSize newSize =
             QSize(horizontalMargin + scrollBarWidth + (columns * _fontWidth),
-                        verticalMargin + (lines * _fontHeight));
+                        verticalMargin + hScrollBarHeight + (lines * _fontHeight));
 
     if (newSize != size()) {
         _size = newSize;

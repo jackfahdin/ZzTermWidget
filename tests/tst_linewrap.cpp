@@ -45,6 +45,8 @@ private slots:
     void displayRowOffset();
     void lineWrapModeApi();
     void softWrapComposition();
+    void hscrollRangeAndVisibility();
+    void hscrollAutoReset();
 };
 
 void TestLineWrap::screenLineLength()
@@ -168,6 +170,78 @@ void TestLineWrap::softWrapComposition()
     QCOMPARE(display.characterAtForTest(0, 0).character, U'a');
     QCOMPARE(display.characterAtForTest(0, 1).character, U'k');
     QCOMPARE(display.characterAtForTest(0, 2).character, U'u');
+}
+
+void TestLineWrap::hscrollRangeAndVisibility()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列：25 字符一行放下、不折行
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    // 显示网格固定为 10 列 × 2 行（左右/上下基础边距各 1px 计入 resize 尺寸）
+    display.resize(10 * display.fontWidth() + 2, 2 * display.fontHeight() + 2);
+    display.show();
+    QTest::qWait(50);
+
+    // 无超宽内容：横向滚动条隐藏
+    QVERIFY(!display.hScrollBarVisibleForTest());
+
+    // 输出 25 字符超长行（缓冲 30 列不折行，行数据保留 25 格）
+    const QByteArray text("abcdefghijklmnopqrstuvwxy");
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);   // 等待 outputChanged 驱动 updateImage
+
+    // range = maxLen - _columns = 25 - 10 = 15，滚动条出现
+    QVERIFY(display.hScrollBarVisibleForTest());
+    QCOMPARE(display.hScrollBarMaximumForTest(), 15);
+}
+
+void TestLineWrap::hscrollAutoReset()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列：25 字符一行放下、不折行
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    // 显示网格固定为 10 列 × 2 行（左右/上下基础边距各 1px 计入 resize 尺寸）
+    display.resize(10 * display.fontWidth() + 2, 2 * display.fontHeight() + 2);
+    display.show();
+
+    const QByteArray text("abcdefghijklmnopqrstuvwxy");
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);
+    QVERIFY(display.hScrollBarVisibleForTest());
+
+    // Shift+滚轮向下：水平视口右移 4 列（每格 4 列）
+    const QPointF center(display.width() / 2.0, display.height() / 2.0);
+    QWheelEvent wheelDown(center, center, QPoint(0, 0), QPoint(0, -120),
+                          Qt::NoButton, Qt::ShiftModifier,
+                          Qt::NoScrollPhase, false);
+    QApplication::sendEvent(&display, &wheelDown);
+
+    // 视口右移后，显示网格 (0,0) 处为原行第 5 个字符 'e'
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'e');
+
+    // 打字即回到光标处：任意按键把水平偏移拉回 0
+    QTest::keyClick(&display, Qt::Key_X);
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'a');
+
+    // 偏移回零不改变超宽事实：滚动条仍在，range 不变
+    QVERIFY(display.hScrollBarVisibleForTest());
+    QCOMPARE(display.hScrollBarMaximumForTest(), 15);
 }
 
 QTEST_MAIN(TestLineWrap)

@@ -483,6 +483,11 @@ public:
      */
     Character characterAtForTest(int x, int y) const { return _image[loc(x, y)]; }
 
+    /** @brief 仅供测试：横向滚动条是否可见。 */
+    bool hScrollBarVisibleForTest() const { return _hScrollBar && _hScrollBar->isVisible(); }
+    /** @brief 仅供测试：横向滚动条 maximum。 */
+    int hScrollBarMaximumForTest() const { return _hScrollBar ? _hScrollBar->maximum() : -1; }
+
     /**
      * Sets the terminal screen section which is displayed in this widget.
      * When updateImage() is called, the display fetches the latest character image from the
@@ -922,7 +927,7 @@ private:
      * @return true 表示已合成；false 表示调用方应走 getImage() 快路径。
      */
     bool composeViewImage(Character *dest);
-    /** @brief SoftWrap：重建 _displayRows 并返回全缓冲各有效行长度。 */
+    /** @brief 全缓冲（历史+屏幕）各行有效长度；只读查询，不重建 _displayRows。 */
     QVector<int> allLineLengths() const;
     /** @brief 可见窗口各行有效长度（窗口相对 0..windowLines-1）。 */
     QVector<int> windowLineLengths() const;
@@ -1061,7 +1066,7 @@ private:
     ScrollBar* _scrollBar;
     QTermWidget::ScrollBarPosition _scrollbarLocation;
     QTermWidget::LineWrapMode _lineWrapMode = QTermWidget::LineWrapMode::NoWrap;
-    QScrollBar *_hScrollBar = nullptr;   ///< NoWrap 模式的横向滚动条（任务 5 接线）
+    QScrollBar *_hScrollBar = nullptr;   ///< NoWrap 模式的横向滚动条（按需出现）
     int _hScrollOffset = 0;              ///< 水平视口偏移（列）
     QVector<DisplayRow> _displayRows;    ///< SoftWrap：显示行 →（缓冲区行, 列偏移）
     QString     _wordCharacters;
