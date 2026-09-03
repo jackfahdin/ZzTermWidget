@@ -2,6 +2,7 @@
 #include "Screen.h"
 #include "ScreenWindow.h"
 #include "DisplayLayout.h"
+#include "qtermwidget.h"
 
 /**
  * @brief 行显示模式（软折叠/横向滚动条）回归测试。
@@ -16,6 +17,7 @@ private slots:
     void foldCount();
     void foldMap();
     void displayRowOffset();
+    void lineWrapModeApi();
 };
 
 void TestLineWrap::screenLineLength()
@@ -101,5 +103,15 @@ void TestLineWrap::displayRowOffset()
     QCOMPARE(displayRowOffsetOfLine(lengths, 10, 2), 4);
 }
 
-QTEST_GUILESS_MAIN(TestLineWrap)
+void TestLineWrap::lineWrapModeApi()
+{
+    QTermWidget widget;
+    QCOMPARE(widget.lineWrapMode(), QTermWidget::LineWrapMode::NoWrap); // 默认
+    widget.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    QCOMPARE(widget.lineWrapMode(), QTermWidget::LineWrapMode::SoftWrap);
+    widget.setLineWrapMode(QTermWidget::LineWrapMode::NoWrap);
+    QCOMPARE(widget.lineWrapMode(), QTermWidget::LineWrapMode::NoWrap);
+}
+
+QTEST_MAIN(TestLineWrap)
 #include "tst_linewrap.moc"

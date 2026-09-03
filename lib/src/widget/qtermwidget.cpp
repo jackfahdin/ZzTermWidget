@@ -486,6 +486,14 @@ void QTermWidget::setScrollBarPosition(ScrollBarPosition pos) {
     m_terminalDisplay->setScrollBarPosition(pos);
 }
 
+void QTermWidget::setLineWrapMode(LineWrapMode mode) {
+    m_terminalDisplay->setLineWrapMode(mode);
+}
+
+QTermWidget::LineWrapMode QTermWidget::lineWrapMode() const {
+    return m_terminalDisplay->lineWrapMode();
+}
+
 void QTermWidget::scrollToEnd() {
     m_terminalDisplay->scrollToEnd();
 }

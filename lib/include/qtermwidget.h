@@ -47,6 +47,13 @@ public:
         /** Show the scroll bar on the right side of the display. */
         ScrollBarRight = 2
     };
+    /**
+     * @brief 行显示模式：窗口缩窄时已输出的超长行如何呈现。
+     */
+    enum class LineWrapMode {
+        NoWrap,   ///< 不自动换行：超出宽度的内容可经横向滚动条查看（默认）
+        SoftWrap  ///< 软折叠：超宽的行在显示层折叠成多行，缓冲区不变
+    };
     enum UrlActivatedType {
         OpenFromContextMenu = 0,
         OpenContainingFromContextMenu = 1,
@@ -153,6 +160,11 @@ public:
 
     // Presence of scrollbar
     void setScrollBarPosition(ScrollBarPosition);
+
+    /** @brief 设置行显示模式，立即重算布局并重绘。 */
+    void setLineWrapMode(LineWrapMode mode);
+    /** @brief 返回当前行显示模式。 */
+    LineWrapMode lineWrapMode() const;
 
     // Wrapped, scroll to end.
     void scrollToEnd();

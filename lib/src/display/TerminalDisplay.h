@@ -41,6 +41,7 @@
 #include "Filter.h"
 #include "Character.h"
 #include "CharWidth.h"
+#include "DisplayLayout.h"
 #include "qtermwidget.h"
 //#include "qsourcehighliter.h"
 
@@ -122,6 +123,11 @@ public:
      * is shown on the left or right side of the display.
      */
     void setScrollBarPosition(QTermWidget::ScrollBarPosition position);
+
+    /** @brief 设置行显示模式（仅影响显示层，不改变上报给 shell 的列数）。 */
+    void setLineWrapMode(QTermWidget::LineWrapMode mode);
+    /** @brief 返回当前行显示模式。 */
+    QTermWidget::LineWrapMode lineWrapMode() const { return _lineWrapMode; }
 
     /**
      * Sets the current position and range of the display's scroll bar.
@@ -1036,6 +1042,10 @@ private:
     QClipboard*  _clipboard;
     ScrollBar* _scrollBar;
     QTermWidget::ScrollBarPosition _scrollbarLocation;
+    QTermWidget::LineWrapMode _lineWrapMode = QTermWidget::LineWrapMode::NoWrap;
+    QScrollBar *_hScrollBar = nullptr;   ///< NoWrap 模式的横向滚动条（任务 5 接线）
+    int _hScrollOffset = 0;              ///< 水平视口偏移（列）
+    QVector<DisplayRow> _displayRows;    ///< SoftWrap：显示行 →（缓冲区行, 列偏移）
     QString     _wordCharacters;
     int         _bellMode;
 

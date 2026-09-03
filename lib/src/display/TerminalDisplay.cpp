@@ -2872,6 +2872,16 @@ void TerminalDisplay::setScrollBarPosition(
     update();
 }
 
+void TerminalDisplay::setLineWrapMode(QTermWidget::LineWrapMode mode) {
+    if (_lineWrapMode == mode)
+        return;
+    _lineWrapMode = mode;
+    _hScrollOffset = 0;
+    _displayRows.clear();
+    propagateSize();   // 重算几何并通知仿真层
+    update();
+}
+
 void TerminalDisplay::mousePressEvent(QMouseEvent *ev) {
     emit mousePressEventForwarded(ev);
 
