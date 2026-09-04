@@ -1508,6 +1508,30 @@ bool TerminalDisplay::composeViewImage(Character *dest) {
                 && cursorPos.x() < row.columnOffset + _columns)
                 cursorRowIndex = i;   // 持续覆写，取最后命中
         }
+        _cursorRowPlaceholder = false;
+        // 行宽整除边界：有效长度恰为显示列数整数倍且 cuX == len 时，光标列不落
+        // 任何段跨度 [columnOffset, columnOffset+_columns)，所有者查找失败——
+        // 放宽所有者查找无效（光标格相对段首索引 == _columns，切片钳到 _columns
+        // 后够不到），须在该行最后一段之后补占位段 {缓冲行, cuX, 1}：主循环按常规
+        // 切片取格（缓冲里该格是默认空格，getLineSlice 在 dest[0] 打 RE_CURSOR），
+        // 其后显示行自然下移一行。光标行无段（不可见）或占位行落不进视口
+        // （插入位置越出 _lines）时跳过；插入后截断到 _lines，保持
+        // _displayRows.size() <= _lines 的行映射不变式
+        if (cursorRowIndex < 0 && cursorBufLine >= 0 && cursorBufLine < lengths.size()
+            && cursorPos.x() == lengths[cursorBufLine]) {
+            int lastSeg = -1;
+            for (int i = 0; i < _displayRows.size(); ++i)
+                if (_displayRows[i].bufferLine == cursorBufLine)
+                    lastSeg = i;
+            if (lastSeg >= 0 && lastSeg + 1 < _lines) {
+                _displayRows.insert(lastSeg + 1,
+                                    DisplayRow{cursorBufLine, cursorPos.x(), 1});
+                if (_displayRows.size() > _lines)
+                    _displayRows.resize(_lines);
+                cursorRowIndex = lastSeg + 1;
+                _cursorRowPlaceholder = true;
+            }
+        }
         for (int y = 0; y < _lines; ++y) {
             if (y < _displayRows.size()) {
                 const DisplayRow &row = _displayRows[y];
@@ -1553,6 +1577,11 @@ int TerminalDisplay::vScrollBarMaximumForTest() const {
 void TerminalDisplay::setVScrollBarValueForTest(int value) {
     if (_scrollBar)
         _scrollBar->setValue(value);
+}
+
+void TerminalDisplay::setHScrollBarValueForTest(int value) {
+    if (_hScrollBar)
+        _hScrollBar->setValue(value);
 }
 
 QPoint TerminalDisplay::mapDisplayToBuffer(int x, int y) const {
@@ -1677,15 +1706,20 @@ void TerminalDisplay::updateImage() {
     // 否则钳制只发生在下方滚动条块、合成已用过期大偏移完成，画面滞留在过度
     // 右移的内容（右侧大片空白）直到下一次输出或按键
     const int maxVisibleLen = maxVisibleLineWidth();
+    // 光标列并入有效宽度：光标停在内容末尾（cuX == len）时光标格位于缓冲列
+    // cuX，range 只按内容宽度算会把行末光标永远留在视口右缘之外（NoWrap 行末
+    // 光标不可见）；并入 cuX+1 后光标列始终可滚入视口
+    const int cursorColumn = _screenWindow->cursorPosition().x();
+    const int scrollableLen = qMax(maxVisibleLen, cursorColumn + 1);
     if (_lineWrapMode == QTermWidget::LineWrapMode::NoWrap)
-        _hScrollOffset = qMin(_hScrollOffset, qMax(0, maxVisibleLen - _columns));
+        _hScrollOffset = qMin(_hScrollOffset, qMax(0, scrollableLen - _columns));
 
     // 行显示模式视图合成：SoftWrap 或存在超宽行/水平偏移时，把窗口各行切片
     // 拼成 _lines × _columns 网格作为比对源；否则保留 getImage() 快路径
     Character *composed = nullptr;
     Character *newimg = nullptr;
     if (_lineWrapMode != QTermWidget::LineWrapMode::NoWrap || _hScrollOffset > 0
-        || maxVisibleLen > _columns) {
+        || scrollableLen > _columns) {
         composed = new Character[_lines * _columns];
         if (composeViewImage(composed))
             newimg = composed;
@@ -1714,15 +1748,19 @@ void TerminalDisplay::updateImage() {
         int total = 0;
         for (int len : lengths)
             total += foldCountForLine(len, _columns);
+        // 行宽整除边界的占位段（composeViewImage 本帧补出）也占一个显示行，
+        // 总数 +1 避免滚动条 range 少 1
+        if (_cursorRowPlaceholder)
+            total += 1;
         setScroll(displayRowOffsetOfLine(lengths, _columns, _screenWindow->currentLine()),
                   total);
     } else {
         setScroll(_screenWindow->currentLine(), _screenWindow->lineCount());
     }
 
-    // 横向滚动条：仅 NoWrap 模式、存在超宽行时出现
+    // 横向滚动条：仅 NoWrap 模式、存在超宽行（含光标列越出视口）时出现
     if (_lineWrapMode == QTermWidget::LineWrapMode::NoWrap && _hScrollBar) {
-        const int range = qMax(0, maxVisibleLen - _columns);
+        const int range = qMax(0, scrollableLen - _columns);
         const bool wasVisible = _hScrollBar->isVisible();
         // 偏移已在函数顶部钳到 range（防御性保留此钳制）；
         // setRange 内部把 value 钳到新上界并发出 valueChanged 时，

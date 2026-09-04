@@ -58,6 +58,11 @@ private slots:
     void foldMapWideAware();
     void softWrapWideCharBoundary();
     void softWrapCursorAtContentEnd();
+    void softWrapCursorFoldBoundaryExact();
+    void softWrapCursorFoldBoundarySingleSegment();
+    void softWrapCursorFoldBoundaryWideChar();
+    void softWrapCursorFoldBoundaryClears();
+    void noWrapCursorColumnInScrollRange();
 };
 
 void TestLineWrap::screenLineLength()
@@ -209,9 +214,9 @@ void TestLineWrap::hscrollRangeAndVisibility()
     emu.receiveData(text.constData(), static_cast<int>(text.size()));
     QTest::qWait(50);   // 等待 outputChanged 驱动 updateImage
 
-    // range = maxLen - _columns = 25 - 10 = 15，滚动条出现
+    // range = max(maxLen, 光标列 cuX+1) - _columns = max(25, 26) - 10 = 16，滚动条出现
     QVERIFY(display.hScrollBarVisibleForTest());
-    QCOMPARE(display.hScrollBarMaximumForTest(), 15);
+    QCOMPARE(display.hScrollBarMaximumForTest(), 16);
 }
 
 void TestLineWrap::hscrollAutoReset()
@@ -250,9 +255,9 @@ void TestLineWrap::hscrollAutoReset()
     QTest::keyClick(&display, Qt::Key_X);
     QCOMPARE(display.characterAtForTest(0, 0).character, U'a');
 
-    // 偏移回零不改变超宽事实：滚动条仍在，range 不变
+    // 偏移回零不改变超宽事实：滚动条仍在，range 不变（光标列并入：26 - 10 = 16）
     QVERIFY(display.hScrollBarVisibleForTest());
-    QCOMPARE(display.hScrollBarMaximumForTest(), 15);
+    QCOMPARE(display.hScrollBarMaximumForTest(), 16);
 }
 
 void TestLineWrap::softWrapCoordinateMapping()
@@ -452,9 +457,9 @@ void TestLineWrap::integrationNoWrapHScroll()
     win->notifyOutputChanged();
     QTest::qWait(50);
 
-    // 超宽行撑出横向滚动条（range = 25 - 10 = 15，条吃掉一行后余 2 个显示行）
+    // 超宽行撑出横向滚动条（range = max(25, 光标列 26) - 10 = 16，条吃掉一行后余 2 个显示行）
     QVERIFY(display.hScrollBarVisibleForTest());
-    QCOMPARE(display.hScrollBarMaximumForTest(), 15);
+    QCOMPARE(display.hScrollBarMaximumForTest(), 16);
 
     // Shift+滚轮向下：水平视口右移 4 列，(0,0) 处变为原行第 5 个字符
     const QPointF center(display.width() / 2.0, display.height() / 2.0);
@@ -536,7 +541,7 @@ void TestLineWrap::hscrollOffsetClampOnResize()
     emu.receiveData(text.constData(), static_cast<int>(text.size()));
     QTest::qWait(50);
     QVERIFY(display.hScrollBarVisibleForTest());
-    QCOMPARE(display.hScrollBarMaximumForTest(), 15);   // range = 25 - 10
+    QCOMPARE(display.hScrollBarMaximumForTest(), 16);   // range = max(25, 光标列 26) - 10
 
     // Shift+滚轮向下两格：水平视口右移 8 列
     const QPointF center(display.width() / 2.0, display.height() / 2.0);
@@ -548,14 +553,14 @@ void TestLineWrap::hscrollOffsetClampOnResize()
     }
     QCOMPARE(display.characterAtForTest(0, 0).character, U'i');   // 偏移 8
 
-    // 拉宽窗口到 22 列：range 缩为 25 - 22 = 3（仍 >0，无显隐切换、无新输出）。
-    // 偏移 8 越界须当场钳到 3 且本帧即按钳后偏移重合成——
+    // 拉宽窗口到 22 列：range 缩为 26 - 22 = 4（仍 >0，无显隐切换、无新输出）。
+    // 偏移 8 越界须当场钳到 4 且本帧即按钳后偏移重合成——
     // 回归：合成曾发生在偏移钳制之前，画面滞留在过期大偏移直到下一次输出
     display.resize(22 * display.fontWidth() + 2, 3 * display.fontHeight() + 2);
     win->notifyOutputChanged();
     QTest::qWait(50);
-    QCOMPARE(display.hScrollBarMaximumForTest(), 3);
-    QCOMPARE(display.characterAtForTest(0, 0).character, U'd');   // 偏移钳到 3
+    QCOMPARE(display.hScrollBarMaximumForTest(), 4);
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'e');   // 偏移钳到 4
 }
 
 void TestLineWrap::hscrollModifierKeyNoReset()
@@ -698,6 +703,172 @@ void TestLineWrap::softWrapCursorAtContentEnd()
     QCOMPARE(display.mapBufferToDisplayForTest(25, 0), QPoint(5, 2));
     // 段内既有内容不受影响（宽度感知折叠语义不变）
     QCOMPARE(display.characterAtForTest(0, 2).character, U'u');
+}
+
+void TestLineWrap::softWrapCursorFoldBoundaryExact()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(5, 30);              // 缓冲 5 行 × 30 列：与视口行数一致，行 0 可见
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格 10 列 × 5 行
+    display.resize(10 * display.fontWidth() + 2, 5 * display.fontHeight() + 2);
+
+    // 行宽整除边界：20 字符恰为显示列数 10 的 2 倍，cuX == 20 == 有效长度
+    // 不落任何段跨度 [columnOffset, columnOffset+10)——
+    // 回归：所有者段查找失败，光标块从合成图像丢失、mapBufferToDisplay 返回 (-1,-1)；
+    // 修复在该行最后一段后补占位段 {缓冲行, cuX, 1}
+    const QByteArray text("abcdefghijklmnopqrst");   // 20 字符
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);
+
+    QVERIFY(display.characterAtForTest(0, 2).rendition & RE_CURSOR);
+    QCOMPARE(display.mapBufferToDisplayForTest(20, 0), QPoint(0, 2));
+    // 显示行 0/1 内容不受占位段影响
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'a');
+    QCOMPARE(display.characterAtForTest(9, 0).character, U'j');
+    QCOMPARE(display.characterAtForTest(0, 1).character, U'k');
+    QCOMPARE(display.characterAtForTest(9, 1).character, U't');
+    // 占位段计入全缓冲显示行总数：2（行 0 折叠）+ 1（占位）+ 4（空行）- 5（视口）= 2
+    QCOMPARE(display.vScrollBarMaximumForTest(), 2);
+}
+
+void TestLineWrap::softWrapCursorFoldBoundarySingleSegment()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格 10 列 × 5 行
+    display.resize(10 * display.fontWidth() + 2, 5 * display.fontHeight() + 2);
+
+    // 单段形态：恰好 10 字符（len == 显示列数），cuX == 10 落段外，
+    // 占位段把光标放到下一显示行首列
+    emu.receiveData("abcdefghij", 10);
+    QTest::qWait(50);
+
+    QCOMPARE(display.characterAtForTest(9, 0).character, U'j');
+    QVERIFY(display.characterAtForTest(0, 1).rendition & RE_CURSOR);
+    QCOMPARE(display.mapBufferToDisplayForTest(10, 0), QPoint(0, 1));
+    QVERIFY(display.characterAtForTest(0, 2).isSpace());   // 下一缓冲行为空
+}
+
+void TestLineWrap::softWrapCursorFoldBoundaryWideChar()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格 10 列 × 5 行
+    display.resize(10 * display.fontWidth() + 2, 5 * display.fontHeight() + 2);
+
+    // 宽字符变体：8 个 ascii + 「中」（占 8-9 两格），len == 10 == 显示列数，
+    // cuX == 10 落段外；宽字符首格不在段尾（end-1 == 9 为填充格），边界不前移，
+    // 占位段不受宽度感知让位干扰
+    const QByteArray text = QByteArray("abcdefgh") + QString::fromUtf16(u"中").toUtf8();
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);
+
+    QCOMPARE(display.characterAtForTest(8, 0).character, U'中');
+    QVERIFY(display.characterAtForTest(0, 1).rendition & RE_CURSOR);
+    QCOMPARE(display.mapBufferToDisplayForTest(10, 0), QPoint(0, 1));
+}
+
+void TestLineWrap::softWrapCursorFoldBoundaryClears()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(4, 30);              // 缓冲 4 行 × 30 列
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格 10 列 × 5 行
+    display.resize(10 * display.fontWidth() + 2, 5 * display.fontHeight() + 2);
+
+    // 行 0 写 20 字符（整除边界），行 1 写 "ZZ"，再把光标移回行 0 列 20：
+    // 占位段激活，行 1 显示段随之下移一行
+    emu.receiveData("abcdefghijklmnopqrst", 20);
+    emu.receiveData("\r\n", 2);
+    emu.receiveData("ZZ", 2);
+    emu.receiveData("\x1b[1;21H", 7);     // CUP：行 1 列 21（1 基）→ 缓冲 (20, 0)
+    QTest::qWait(50);
+
+    QVERIFY(display.characterAtForTest(0, 2).rendition & RE_CURSOR);
+    QCOMPARE(display.mapBufferToDisplayForTest(20, 0), QPoint(0, 2));
+    QCOMPARE(display.characterAtForTest(0, 3).character, U'Z');   // 行 1 被占位段挤到显示行 3
+
+    // 光标左移一格：cuX == 19 落回末段，占位段消失，下方显示行复位
+    emu.receiveData("\x1b[D", 3);         // CUB：光标左移 1 列
+    QTest::qWait(50);
+
+    QVERIFY(display.characterAtForTest(9, 1).rendition & RE_CURSOR);
+    QCOMPARE(display.mapBufferToDisplayForTest(19, 0), QPoint(9, 1));
+    QCOMPARE(display.characterAtForTest(0, 2).character, U'Z');   // 行 1 回到显示行 2
+    QVERIFY(display.characterAtForTest(0, 3).isSpace());
+}
+
+void TestLineWrap::noWrapCursorColumnInScrollRange()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列：20 字符一行放下
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    // NoWrap，显示网格 10 列 × 3 行
+    display.resize(10 * display.fontWidth() + 2, 3 * display.fontHeight() + 2);
+    display.show();
+
+    // 20 字符行，cuX == 20 == 有效长度：光标格位于缓冲列 20，
+    // range 只按内容宽度算是 20 - 10 = 10，最大偏移处光标列（显示列 10）仍在视口外——
+    // 回归：NoWrap 行末光标无法滚入视口；修复把光标列并入 range：max(20, 21) - 10 = 11
+    const QByteArray text("abcdefghijklmnopqrst");
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);
+
+    QVERIFY(display.hScrollBarVisibleForTest());
+    QCOMPARE(display.hScrollBarMaximumForTest(), 11);
+
+    // 滚到最大偏移：光标格（缓冲列 20 → 显示列 9）带 RE_CURSOR 可见
+    display.setHScrollBarValueForTest(11);
+    QTest::qWait(50);
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'l');   // 缓冲列 11
+    QVERIFY(display.characterAtForTest(9, 0).rendition & RE_CURSOR);
 }
 
 QTEST_MAIN(TestLineWrap)

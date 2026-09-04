@@ -496,6 +496,8 @@ public:
     int vScrollBarMaximumForTest() const;
     /** @brief 仅供测试：设置垂直滚动条值（经 valueChanged 走完整滚动路径）。 */
     void setVScrollBarValueForTest(int value);
+    /** @brief 仅供测试：设置横向滚动条值（经 valueChanged 走完整滚动路径）。 */
+    void setHScrollBarValueForTest(int value);
 
     /**
      * Sets the terminal screen section which is displayed in this widget.
@@ -1094,6 +1096,8 @@ private:
     QScrollBar *_hScrollBar = nullptr;   ///< NoWrap 模式的横向滚动条（按需出现）
     int _hScrollOffset = 0;              ///< 水平视口偏移（列）
     QVector<DisplayRow> _displayRows;    ///< SoftWrap：显示行 →（缓冲区行, 列偏移）
+    /** @brief 本帧合成是否在光标行末段后补了占位段（行宽整除边界光标格）；滚动条 range 求和用。 */
+    bool _cursorRowPlaceholder = false;
     /** @brief 上一帧 updateImage 是否走了 composeViewImage 合成路径（选区反显方式分流用）。 */
     bool _composedViewActive = false;
     /** @brief 合成路径上一帧是否存在活动选区（选区清除帧强制置脏用）。 */
