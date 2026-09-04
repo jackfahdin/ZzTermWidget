@@ -1633,6 +1633,23 @@ QPoint TerminalDisplay::mapBufferToDisplay(int bufX, int bufY) const {
     return {x, bufY};
 }
 
+QPoint TerminalDisplay::mouseReportPosition(int bufColumn, int bufLine) const {
+    // 上报一律以显示网格计：缓冲窗口坐标经 mapBufferToDisplay 换回显示行列
+    // （SoftWrap 折叠段映回显示行；NoWrap 列去掉水平偏移；经典模式恒等）
+    QPoint disp = mapBufferToDisplay(bufColumn, bufLine);
+    if (disp.x() < 0 || disp.y() < 0) {
+        // charColumn == _usedColumns（行尾后一格）等位置不属任何折叠段或越出
+        // 水平视口：退回行内相邻列定行、列取其后一格；双重失败再以网格边界兜底
+        const QPoint inner = mapBufferToDisplay(qMax(0, bufColumn - 1), bufLine);
+        if (inner.x() >= 0 && inner.y() >= 0)
+            disp = {qMin(inner.x() + 1, _columns), inner.y()};
+        else
+            disp = {qBound(0, bufColumn, _columns), qBound(0, bufLine, _lines - 1)};
+    }
+    // 协议坐标 1 基；行方向沿用滚动条修正（value - maximum，相对窗口底部）
+    return {disp.x() + 1, disp.y() + 1 + _scrollBar->value() - _scrollBar->maximum()};
+}
+
 int TerminalDisplay::bufferLineForDisplayRow(int y) const {
     if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap
         && y >= 0 && y < _displayRows.size())
@@ -2383,6 +2400,49 @@ void TerminalDisplay::drawInputMethodPreeditString(QPainter &painter, const QRec
 
 FilterChain *TerminalDisplay::filterChain() const { return _filterChain; }
 
+QVector<QRect> TerminalDisplay::hotSpotVisualRects(const Filter::HotSpot *spot,
+                                                   int leftMargin) const {
+    QVector<QRect> rects;
+    if (!_screenWindow || !_screenWindow->screen())
+        return rects;
+
+    for (int line = spot->startLine(); line <= spot->endLine(); line++) {
+        int startColumn = 0;
+        // 缓冲坐标语义：热点行列是缓冲窗口相对坐标，而 _image 是显示网格
+        // （行显示模式下二者不对应），故改为按缓冲行取数——endColumn 初值取
+        // 该缓冲行有效长度，再经窗口行切片从尾向前裁掉末尾空白格；
+        // 经典模式下与上游按 _image 裁尾空白的行为等价
+        int endColumn = _screenWindow->screen()->getLineLength(
+                _screenWindow->currentLine() + line);
+        while (endColumn > 0) {
+            Character ch;
+            _screenWindow->getWindowLineSlice(line, endColumn - 1, 1, &ch);
+            if (!ch.isSpace())
+                break;
+            endColumn--;
+        }
+
+        if (line == spot->startLine())
+            startColumn = spot->startColumn();
+        if (line == spot->endLine())
+            endColumn = spot->endColumn();
+
+        // 缓冲列区间（左闭右开）经显示段换算逐段绘制；经典模式单段恒等。
+        // 段矩形沿用原像素算式：右缘/下缘各收 1px，避免压到相邻热点，
+        // 也避免鼠标停在目标区边缘时命中判定的边界歧义
+        const auto segments = displaySegmentsForRange(line, startColumn, endColumn - 1);
+        for (const DisplaySegment &seg : segments) {
+            QRect r;
+            r.setCoords(seg.startColumn * _fontWidth + 1 + leftMargin,
+                        seg.row * _fontHeight + 1 + _topBaseMargin,
+                        (seg.endColumn + 1) * _fontWidth - 1 + leftMargin,
+                        (seg.row + 1) * _fontHeight - 1 + _topBaseMargin);
+            rects.append(r);
+        }
+    }
+    return rects;
+}
+
 void TerminalDisplay::paintFilters(QPainter &painter) {
     // get color of character under mouse and use it to draw
     // lines for filters
@@ -2433,63 +2493,26 @@ void TerminalDisplay::paintFilters(QPainter &painter) {
             }
         }
 
-        for (int line = spot->startLine(); line <= spot->endLine(); line++) {
-            int startColumn = 0;
-            int endColumn = _columns - 1; // TODO use number of _columns which are
-                                          // actually occupied on this line rather
-                                          // than the width of the display in _columns
+        for (const QRect &r : hotSpotVisualRects(spot, leftMargin)) {
+            // Underline link hotspots
+            if (spot->type() == Filter::HotSpot::Link) {
+                QFontMetrics metrics(font());
 
-            // ignore whitespace at the end of the lines
-            do {
-                if (endColumn <= 0)
-                    break;
-                uint64_t ucode = _image[loc(startColumn, line)].character;
-                if (ucode > 0xffff)
-                    break;
-                if (QChar(_image[loc(startColumn, line)].character).isSpace())
-                    break;
-                endColumn--;
-            } while (true);
-
-            // increment here because the column which we want to set 'endColumn' to
-            // is the first whitespace character at the end of the line
-            endColumn++;
-
-            if (line == spot->startLine())
-                startColumn = spot->startColumn();
-            if (line == spot->endLine())
-                endColumn = spot->endColumn();
-
-            // 缓冲列区间（左闭右开）经显示段换算逐段绘制；经典模式单段恒等。
-            // 段矩形沿用原像素算式：右缘/下缘各收 1px，避免压到相邻热点，
-            // 也避免鼠标停在目标区边缘时命中判定的边界歧义
-            const auto segments = displaySegmentsForRange(line, startColumn, endColumn - 1);
-            for (const DisplaySegment &seg : segments) {
-                QRect r;
-                r.setCoords(seg.startColumn * _fontWidth + 1 + leftMargin,
-                            seg.row * _fontHeight + 1 + _topBaseMargin,
-                            (seg.endColumn + 1) * _fontWidth - 1 + leftMargin,
-                            (seg.row + 1) * _fontHeight - 1 + _topBaseMargin);
-                // Underline link hotspots
-                if (spot->type() == Filter::HotSpot::Link) {
-                    QFontMetrics metrics(font());
-
-                    // find the baseline (which is the invisible line that the characters in
-                    // the font sit on, with some having tails dangling below)
-                    int baseline = r.bottom() - metrics.descent();
-                    // find the position of the underline below that
-                    int underlinePos = baseline + metrics.underlinePos();
-                    if (region.contains(mapFromGlobal(QCursor::pos()))) {
-                        painter.drawLine(r.left(), underlinePos, r.right(), underlinePos);
-                    }
+                // find the baseline (which is the invisible line that the characters in
+                // the font sit on, with some having tails dangling below)
+                int baseline = r.bottom() - metrics.descent();
+                // find the position of the underline below that
+                int underlinePos = baseline + metrics.underlinePos();
+                if (region.contains(mapFromGlobal(QCursor::pos()))) {
+                    painter.drawLine(r.left(), underlinePos, r.right(), underlinePos);
                 }
-                // Marker hotspots simply have a transparent rectanglular shape
-                // drawn on top of them
-                else if (spot->type() == Filter::HotSpot::Marker) {
-                    QColor markerColor = spot->color();
-                    markerColor.setAlpha(120);
-                    painter.fillRect(r, markerColor);
-                }
+            }
+            // Marker hotspots simply have a transparent rectanglular shape
+            // drawn on top of them
+            else if (spot->type() == Filter::HotSpot::Marker) {
+                QColor markerColor = spot->color();
+                markerColor.setAlpha(120);
+                painter.fillRect(r, markerColor);
             }
         }
     }
@@ -3345,9 +3368,8 @@ void TerminalDisplay::mousePressEvent(QMouseEvent *ev) {
                 _iPntSel = _pntSel = pos;
                 _actSel = 1; // left mouse button pressed but nothing selected yet.
             } else {
-                emit mouseSignal(
-                        0, charColumn + 1,
-                        charLine + 1 + _scrollBar->value() - _scrollBar->maximum(), 0);
+                const QPoint rp = mouseReportPosition(charColumn, charLine);
+                emit mouseSignal(0, rp.x(), rp.y(), 0);
             }
 
             if (ev->modifiers() & Qt::ControlModifier) {
@@ -3362,17 +3384,17 @@ void TerminalDisplay::mousePressEvent(QMouseEvent *ev) {
     } else if (ev->button() == Qt::MiddleButton) {
         if (_mouseMarks || (ev->modifiers() & Qt::ShiftModifier))
             emitSelection(true, ev->modifiers() & Qt::ControlModifier);
-        else
-            emit mouseSignal(
-                    1, charColumn + 1,
-                    charLine + 1 + _scrollBar->value() - _scrollBar->maximum(), 0);
+        else {
+            const QPoint rp = mouseReportPosition(charColumn, charLine);
+            emit mouseSignal(1, rp.x(), rp.y(), 0);
+        }
     } else if (ev->button() == Qt::RightButton) {
         if (_mouseMarks || (ev->modifiers() & Qt::ShiftModifier))
             emit configureRequest(ev->pos());
-        else
-            emit mouseSignal(
-                    2, charColumn + 1,
-                    charLine + 1 + _scrollBar->value() - _scrollBar->maximum(), 0);
+        else {
+            const QPoint rp = mouseReportPosition(charColumn, charLine);
+            emit mouseSignal(2, rp.x(), rp.y(), 0);
+        }
     }
 }
 
@@ -3509,9 +3531,8 @@ void TerminalDisplay::mouseMoveEvent(QMouseEvent *ev) {
         if (ev->buttons() & Qt::RightButton)
             button = 2;
 
-        emit mouseSignal(button, charColumn + 1,
-                        charLine + 1 + _scrollBar->value() - _scrollBar->maximum(),
-                        1);
+        const QPoint rp = mouseReportPosition(charColumn, charLine);
+        emit mouseSignal(button, rp.x(), rp.y(), 1);
 
         return;
     }
@@ -3726,10 +3747,10 @@ void TerminalDisplay::mouseReleaseEvent(QMouseEvent *ev) {
             //        outside the range. The procedure used in `mouseMoveEvent'
             //        applies here, too.
 
-            if (!_mouseMarks && !(ev->modifiers() & Qt::ShiftModifier))
-                emit mouseSignal(
-                        0, charColumn + 1,
-                        charLine + 1 + _scrollBar->value() - _scrollBar->maximum(), 2);
+            if (!_mouseMarks && !(ev->modifiers() & Qt::ShiftModifier)) {
+                const QPoint rp = mouseReportPosition(charColumn, charLine);
+                emit mouseSignal(0, rp.x(), rp.y(), 2);
+            }
         }
         dragInfo.state = diNone;
     }
@@ -3737,9 +3758,8 @@ void TerminalDisplay::mouseReleaseEvent(QMouseEvent *ev) {
     if (!_mouseMarks && ((ev->button() == Qt::RightButton &&
                                                 !(ev->modifiers() & Qt::ShiftModifier)) ||
                                              ev->button() == Qt::MiddleButton)) {
-        emit mouseSignal(ev->button() == Qt::MiddleButton ? 1 : 2, charColumn + 1,
-                                         charLine + 1 + _scrollBar->value() - _scrollBar->maximum(),
-                                         2);
+        const QPoint rp = mouseReportPosition(charColumn, charLine);
+        emit mouseSignal(ev->button() == Qt::MiddleButton ? 1 : 2, rp.x(), rp.y(), 2);
     }
 }
 
@@ -3810,7 +3830,8 @@ void TerminalDisplay::mouseDoubleClickEvent(QMouseEvent *ev) {
     if (!_mouseMarks && !(ev->modifiers() & Qt::ShiftModifier)) {
         // Send just _ONE_ click event, since the first click of the double click
         // was already sent by the click handler
-        emit mouseSignal(0, pos.x() + 1,pos.y() + 1 + _scrollBar->value() - _scrollBar->maximum(), 0); // left button
+        const QPoint rp = mouseReportPosition(pos.x(), pos.y());
+        emit mouseSignal(0, rp.x(), rp.y(), 0); // left button
         return;
     }
 
@@ -4181,8 +4202,8 @@ void TerminalDisplay::wheelEvent(QWheelEvent *ev) {
         int charColumn;
         getCharacterPosition(ev->position(), charLine, charColumn);
 
-        emit mouseSignal(ev->angleDelta().y() > 0 ? 4 : 5, charColumn + 1,
-                        charLine + 1 + _scrollBar->value() - _scrollBar->maximum(), 0);
+        const QPoint rp = mouseReportPosition(charColumn, charLine);
+        emit mouseSignal(ev->angleDelta().y() > 0 ? 4 : 5, rp.x(), rp.y(), 0);
     }
 }
 

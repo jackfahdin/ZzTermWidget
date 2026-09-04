@@ -502,6 +502,10 @@ public:
     int linePropertyForDisplayRowForTest(int y) const { return linePropertyForDisplayRow(y); }
     /** @brief 仅供测试：显示行 y 对应的缓冲窗口相对行号（bufferLineForDisplayRow）。 */
     int bufferLineForDisplayRowForTest(int y) const { return bufferLineForDisplayRow(y); }
+    /** @brief 仅供测试：热点逐行下划线/标记的显示矩形（paintFilters 同源逻辑，左边距取 0）。 */
+    QVector<QRect> hotSpotVisualRectsForTest(const Filter::HotSpot *spot) const {
+        return hotSpotVisualRects(spot, 0);
+    }
 
     /**
      * Sets the terminal screen section which is displayed in this widget.
@@ -964,6 +968,26 @@ private:
      * @return 每项为 (显示行, 段内起始显示列, 段内结束显示列)；不可见时为空。
      */
     QVector<DisplaySegment> displaySegmentsForRange(int bufLine, int startCol, int endCol) const;
+
+    /**
+     * @brief 热点逐行下划线/标记的显示矩形（paintFilters 绘制与测试钩子共用）。
+     * @param spot 热点（缓冲窗口相对坐标）。
+     * @param leftMargin 左边距像素（滚动条在左时的避让宽度）。
+     * @return 逐段像素矩形；行尾空白经缓冲行切片从尾向前裁掉，
+     *         列区间再经 displaySegmentsForRange 换算为显示段。
+     */
+    QVector<QRect> hotSpotVisualRects(const Filter::HotSpot *spot, int leftMargin) const;
+
+    /**
+     * @brief 鼠标事件上报坐标：缓冲窗口相对行列 → 协议 1 基显示行列。
+     * @param bufColumn 缓冲窗口相对列。
+     * @param bufLine 缓冲窗口相对行。
+     * @return (cx, cy)：内部经 mapBufferToDisplay 换回显示行列（SoftWrap 折叠行
+     *         映射回显示行，NoWrap 列去掉水平偏移，经典模式恒等），再加 1；
+     *         行方向沿用滚动条修正（value - maximum，相对窗口底部）。
+     *         行尾后一格等不可见位置以可视网格边界兜底。
+     */
+    QPoint mouseReportPosition(int bufColumn, int bufLine) const;
 
     /**
      * @brief 显示行 y 对应的缓冲窗口相对行号。

@@ -6,6 +6,7 @@
 #include "History.h"
 #include "TerminalDisplay.h"
 #include "DisplayLayout.h"
+#include "Filter.h"
 #include "qtermwidget.h"
 
 /**
@@ -29,6 +30,22 @@ static QFont monospaceFont()
             return QFont(name);
     return QFontDatabase::systemFont(QFontDatabase::FixedFont);
 }
+
+/**
+ * @brief 测试用 Link 热点：坐标直接构造、类型固定 Link，无点击动作。
+ */
+class TestLinkHotSpot : public Filter::HotSpot
+{
+public:
+    TestLinkHotSpot(int startLine, int startColumn, int endLine, int endColumn)
+        : Filter::HotSpot(startLine, startColumn, endLine, endColumn)
+    {
+        setType(Link);
+    }
+    void clickAction() override {}
+    QString clickActionToolTip() override { return {}; }
+    bool hasClickAction() override { return false; }
+};
 
 /**
  * @brief 行显示模式（软折叠/横向滚动条）回归测试。
@@ -68,6 +85,10 @@ private slots:
     void softWrapDoubleHeightTruncated();
     void screenLineSliceCursorGate();
     void softWrapCursorHiddenByDecrst25();
+    void multiLineHotSpotUnderlineClassic();
+    void multiLineHotSpotUnderlineSoftWrap();
+    void softWrapMouseSignalCoordinates();
+    void noWrapMouseSignalCoordinates();
 };
 
 void TestLineWrap::screenLineLength()
@@ -1053,6 +1074,148 @@ void TestLineWrap::softWrapCursorHiddenByDecrst25()
     win->notifyOutputChanged();
     QTest::qWait(50);
     QVERIFY(display.characterAtForTest(3, 0).rendition & RE_CURSOR);
+}
+
+void TestLineWrap::multiLineHotSpotUnderlineClassic()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(3, 10);              // 缓冲 3 行 × 10 列，与显示网格同宽：经典快路径
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.resize(10 * display.fontWidth() + 2, 3 * display.fontHeight() + 2);
+
+    // 25 字符硬折行跨缓冲行 0..2（10/10/5）：模拟一条跨行长 URL 热点
+    const QByteArray text(25, 'a');
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);
+
+    const TestLinkHotSpot spot(0, 0, 2, 5);
+    const auto rects = display.hotSpotVisualRectsForTest(&spot);
+
+    // 起始行/中间行下划线须覆盖整行文本宽度——
+    // 回归：空白裁剪循环曾用 _image[loc(startColumn=0, line)]（上游为 endColumn）
+    // 做检查，行首非空白即把 endColumn 压到 1，下划线只剩 1 列宽
+    QCOMPARE(rects.size(), 3);
+    QCOMPARE(rects[0].width() + 1, 10 * display.fontWidth());
+    QCOMPARE(rects[1].width() + 1, 10 * display.fontWidth());
+    QCOMPARE(rects[2].width() + 1, 5 * display.fontWidth());
+}
+
+void TestLineWrap::multiLineHotSpotUnderlineSoftWrap()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(3, 30);              // 缓冲 3 行 × 30 列
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格 10 列 × 9 行：每个 30 列缓冲行折叠为 3 个显示段
+    display.resize(10 * display.fontWidth() + 2, 9 * display.fontHeight() + 2);
+
+    // 65 字符跨缓冲行 0..2（30/30/5）：热点起始/中间行均为满行链接文本
+    const QByteArray text(65, 'a');
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);
+
+    const TestLinkHotSpot spot(0, 0, 2, 5);
+    const auto rects = display.hotSpotVisualRectsForTest(&spot);
+
+    // 缓冲行 0/1 各折 3 段满宽下划线，缓冲行 2 单段 5 列——
+    // 回归：裁剪曾按 _image 显示网格寻址缓冲坐标（行显示模式叠加后读错格），
+    // 起始/中间行下划线被压成 1 列宽
+    QCOMPARE(rects.size(), 7);
+    for (int i = 0; i < 6; ++i)
+        QCOMPARE(rects[i].width() + 1, 10 * display.fontWidth());
+    QCOMPARE(rects[6].width() + 1, 5 * display.fontWidth());
+    // 第 4 段起为缓冲行 1 的折叠段：显示行号随折叠递增
+    QVERIFY(rects[3].top() > rects[2].top());
+}
+
+void TestLineWrap::softWrapMouseSignalCoordinates()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列：25 字符一行放下
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格 10 列 × 5 行：25 字符缓冲行折叠为 3 个显示段
+    display.resize(10 * display.fontWidth() + 2, 5 * display.fontHeight() + 2);
+
+    const QByteArray text("abcdefghijklmnopqrstuvwxy");
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);
+
+    display.setUsesMouse(false);   // 鼠标事件上报给终端程序（而非选区）
+    QSignalSpy spy(&display, &TerminalDisplay::mouseSignal);
+
+    // 点击显示行 2 列 2（折叠行第 3 段，缓冲坐标 (22, 0)）
+    QTest::mouseClick(&display, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(1 + 2 * display.fontWidth(),
+                             1 + 2 * display.fontHeight()));
+    QVERIFY(spy.size() >= 1);
+    // 上报行列以显示网格计（1 基）：cx = 3、cy = 3——
+    // 回归：旧实现直接报缓冲坐标（cx = 23、cy = 1），显示行与缓冲行混算
+    QCOMPARE(spy.at(0).at(1).toInt(), 3);
+    QCOMPARE(spy.at(0).at(2).toInt(), 3);
+}
+
+void TestLineWrap::noWrapMouseSignalCoordinates()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列：25 字符一行放下
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    // NoWrap，显示网格 10 列 × 3 行：超宽行撑出横向滚动条
+    display.resize(10 * display.fontWidth() + 2, 3 * display.fontHeight() + 2);
+    display.show();
+
+    const QByteArray text("abcdefghijklmnopqrstuvwxy");
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);
+    QVERIFY(display.hScrollBarVisibleForTest());
+
+    // 水平视口右移 4 列：显示列 2 对应缓冲列 6
+    display.setHScrollBarValueForTest(4);
+    QTest::qWait(50);
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'e');
+
+    display.setUsesMouse(false);   // 鼠标事件上报给终端程序（而非选区）
+    QSignalSpy spy(&display, &TerminalDisplay::mouseSignal);
+
+    // 点击显示行 0 列 2：cx 应报显示列 3（不含水平偏移）——
+    // 回归：旧实现 cx = 7，把 _hScrollOffset 混进上报列
+    QTest::mouseClick(&display, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(1 + 2 * display.fontWidth(), 1));
+    QVERIFY(spy.size() >= 1);
+    QCOMPARE(spy.at(0).at(1).toInt(), 3);
+    QCOMPARE(spy.at(0).at(2).toInt(), 1);
 }
 
 QTEST_MAIN(TestLineWrap)
