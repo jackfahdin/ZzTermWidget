@@ -822,7 +822,9 @@ public:
      *        测试夹具等场景两者可不一致）。
      * @note 已处于目标状态时幂等：重复启用只按 setFoldCountColumns() 处理列宽漂移。
      *       缓存随 addHistLine/prependHistoryLines 增量更新，setScroll 换型/清空后
-     *       全量重建；前缀和惰性构建，历史突变即失效。
+     *       全量重建；前缀和惰性构建，历史突变即失效。段数语义与
+     *       buildFoldMapWideAware 对齐（宽度感知 + 图形/链接行钳制），
+     *       滚动条总数与实际显示行数一致。
      */
     void setFoldCountTracking(bool enabled, int foldColumns);
     /**
@@ -960,8 +962,21 @@ private:
     mutable QVector<int> _histFoldPrefix; ///< 惰性前缀和（size = counts + 1）
     mutable bool _histFoldPrefixDirty = true;
 
-    /** @brief 有效长度 @p len 的行按 @p cols 列宽折叠的段数（空行计 1 段）。 */
-    static int foldCountForLineLen(int len, int cols);
+    /**
+     * @brief 单行折叠段数：宽度感知切分（与 buildFoldMapWideAware 同一归纳——
+     *        段尾遇宽字符首格前移一格，每行可多 1 段）；clampToSingle 时钳为
+     *        单段（图形/链接/双宽双高行，与 composeViewImage 的 qMin(len, columns)
+     *        钳制规则一致）。
+     * @param cells 行单元格数据（仅 len > cols 且未钳制时读取；短行/钳制行可传 nullptr）。
+     */
+    static int foldCountForCells(const Character *cells, int len, int cols,
+                                 bool clampToSingle);
+    /**
+     * @brief 历史行 @p histLine 的钳制标志：链接/图像/kitty 放置平行表非空。
+     * @note 历史行无双宽/双高属性（getLineProperties 只回 LINE_WRAPPED），
+     *       钳制口径与 composeViewImage 对历史行的判定一致。
+     */
+    bool histLineClamped(int histLine) const;
     /** @brief 全量重建历史折叠缓存（启用追踪/列宽变化/setScroll 换型后调用）。 */
     void rebuildHistFoldCounts();
     /** @brief 惰性前缀和按需重建（已有效时 no-op）。 */

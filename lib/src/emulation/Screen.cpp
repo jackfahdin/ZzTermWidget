@@ -1439,9 +1439,14 @@ void Screen::addHistLine() {
         int oldHistLines = history->getLines();
 
         // SoftWrap 折叠缓存：入行段数须在下方平行表 move 之前取样
-        //（行长度在该点已知，foldCountForLineLen 为 O(1)）
+        //（行长度在该点已知；宽度感知扫描 O(len)，随入库摊销。
+        //  钳制标志取三张平行表当前行非空，不含 lineProperties——历史行无
+        //  双宽/双高属性，口径与 composeViewImage 对历史行的判定一致）
         const int newFoldCount = _histFoldTracking
-                ? foldCountForLineLen(screenLines[0].count(), _histFoldColumns)
+                ? foldCountForCells(screenLines[0].constData(), screenLines[0].count(),
+                                    _histFoldColumns,
+                                    !_linkLines[0].isEmpty() || !_imageLines[0].isEmpty()
+                                        || !_kittyLines[0].isEmpty())
                 : 0;
 
         history->addCellsVector(screenLines[0]);
@@ -1583,7 +1588,10 @@ int Screen::prependHistoryLines(const QVector<QVector<Character>> &lines,
         const int skip = lines.size() - n;
         QVector<int> counts(n);
         for (int i = 0; i < n; i++) {
-            counts[i] = foldCountForLineLen(lines[skip + i].size(), _histFoldColumns);
+            // 读回行无链接/图像引用（上方平行表前插空行），无钳制
+            counts[i] = foldCountForCells(lines[skip + i].constData(),
+                                          lines[skip + i].size(),
+                                          _histFoldColumns, false);
             _histFoldTotal += counts[i];
         }
         // QList 无整段 insert 重载：新行计数在前拼好后整体替换（每批一次堆搬移）
@@ -2109,10 +2117,32 @@ int Screen::getHistLines() const { return history->getLines(); }
 
 // SoftWrap 历史折叠段数缓存 ----------------
 
-int Screen::foldCountForLineLen(int len, int cols) {
-    if (cols <= 0)
-        return 1;   // 退化列宽防御（与 foldCountForLine 同口径）
-    return qMax(1, (len + cols - 1) / cols);
+int Screen::foldCountForCells(const Character *cells, int len, int cols,
+                              bool clampToSingle) {
+    // 钳制行与未超宽行恒为单段（与 composeViewImage 的 qMin(len, columns) 钳制
+    // + buildFoldMapWideAware 单段结果一致；空行/退化列宽防御同为 1）
+    if (clampToSingle || cols <= 0 || len <= cols)
+        return 1;
+    // 宽度感知切分：与 buildFoldMapWideAware 同一归纳——段尾落在宽字符首格
+    //（本格 character 非 0、次格 character == 0，与 drawContents 判定同式）时
+    // 边界前移一格，宽字符整体进入下一段；段内至少保留 1 格，循环必终止
+    int count = 0;
+    int start = 0;
+    while (start < len) {
+        int end = qMin(start + cols, len);
+        if (end - 1 > start && end < len
+            && cells[end - 1].character != 0 && cells[end].character == 0)
+            --end;
+        ++count;
+        start = end;
+    }
+    return count;
+}
+
+bool Screen::histLineClamped(int histLine) const {
+    return (histLine < (int)_historyLinks.size() && !_historyLinks[histLine].isEmpty())
+           || (histLine < (int)_historyImages.size() && !_historyImages[histLine].isEmpty())
+           || (histLine < (int)_historyKittyRefs.size() && !_historyKittyRefs[histLine].isEmpty());
 }
 
 void Screen::setFoldCountTracking(bool enabled, int foldColumns) {
@@ -2149,8 +2179,20 @@ void Screen::rebuildHistFoldCounts() {
         return;
     const int n = history->getLines();
     _histFoldCounts.reserve(n);
+    QVector<Character> cells;
     for (int i = 0; i < n; i++) {
-        const int count = foldCountForLineLen(history->getLineLen(i), _histFoldColumns);
+        const int len = history->getLineLen(i);
+        int count;
+        if (len <= _histFoldColumns) {
+            count = foldCountForCells(nullptr, len, _histFoldColumns,
+                                      histLineClamped(i));
+        } else {
+            // 仅超宽行取单元格数据做宽字符首格扫描（随重建摊销，每 resize 一次）
+            cells.resize(len);
+            history->getCells(i, 0, len, cells.data());
+            count = foldCountForCells(cells.constData(), len, _histFoldColumns,
+                                      histLineClamped(i));
+        }
         _histFoldCounts.append(count);
         _histFoldTotal += count;
     }
@@ -2195,10 +2237,22 @@ int Screen::lineFoldCount(int absoluteLine) const {
         if (_histFoldTracking && absoluteLine < _histFoldCounts.size())
             return _histFoldCounts[absoluteLine];
         // 追踪未启用（交替屏等兜底）：按屏幕列宽现场计算
-        return foldCountForLineLen(history->getLineLen(absoluteLine), columns);
+        const int len = history->getLineLen(absoluteLine);
+        if (len <= columns)
+            return foldCountForCells(nullptr, len, columns, histLineClamped(absoluteLine));
+        QVector<Character> cells(len);
+        history->getCells(absoluteLine, 0, len, cells.data());
+        return foldCountForCells(cells.constData(), len, columns,
+                                 histLineClamped(absoluteLine));
     }
+    const int idx = absoluteLine - histLines;
+    const ImageLine &line = screenLines[idx];
     const int cols = _histFoldTracking ? _histFoldColumns : columns;
-    return foldCountForLineLen(screenLines[absoluteLine - histLines].count(), cols);
+    // 屏幕行钳制口径与 composeViewImage 一致：链接/图像/kitty 段非空或双宽/双高
+    const bool clamp = !_linkLines[idx].isEmpty() || !_imageLines[idx].isEmpty()
+                       || !_kittyLines[idx].isEmpty()
+                       || (lineProperties[idx] & (LINE_DOUBLEWIDTH | LINE_DOUBLEHEIGHT));
+    return foldCountForCells(line.constData(), line.count(), cols, clamp);
 }
 
 void Screen::setScroll(const HistoryType &t, bool copyPreviousScroll) {

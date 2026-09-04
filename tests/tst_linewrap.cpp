@@ -95,6 +95,7 @@ private slots:
     void softWrapFoldCacheClearHistory();
     void softWrapFoldCacheResize();
     void softWrapFoldCacheDragMapping();
+    void softWrapFoldCacheWideCharAlignment();
 };
 
 void TestLineWrap::screenLineLength()
@@ -1437,6 +1438,39 @@ void TestLineWrap::softWrapFoldCacheDragMapping()
     // 落 L5 首段（缓冲行 5），再被 scrollTo 钳到最大窗口顶 4
     display.setVScrollBarValueForTest(8);
     QCOMPARE(display.screenWindow()->currentLine(), 4);
+}
+
+void TestLineWrap::softWrapFoldCacheWideCharAlignment()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display(nullptr);
+    initSoftWrapFoldEnv(emu, win, display, 10);
+
+    // 20 单元格 CJK 混排行：a..i（0-8）、中（9-10，宽字符首格在段尾）、j..r（11-19）。
+    // 宽度感知折叠（buildFoldMapWideAware 语义，段尾让位）每行 3 段；
+    // 等宽切分只有 2 段——滚动条总数须与实际显示行数一致（含历史区缓存行）
+    const QByteArray cjkLine = QByteArray("abcdefghi")
+                               + QString::fromUtf16(u"中").toUtf8()
+                               + QByteArray("jklmnopqr");
+    for (int i = 0; i < 4; ++i) {
+        emu.receiveData(cjkLine.constData(), static_cast<int>(cjkLine.size()));
+        if (i < 3)
+            emu.receiveData("\r\n", 2);
+    }
+    QTest::qWait(50);
+
+    QCOMPARE(win->screen()->getHistLines(), 2);   // 历史 {L0,L1} + 屏幕 {L2,L3}
+    // 4 行 × 3 段 = 12 个显示行（等宽口径会得 4×2 = 8，maximum 3）
+    QCOMPARE(display.vScrollBarMaximumForTest(), 12 - 5);
+
+    // 合成视图实际段数旁证：历史行 L0 滚入窗口顶部后仍占 3 个显示行
+    display.setVScrollBarValueForTest(0);
+    QCOMPARE(display.screenWindow()->currentLine(), 0);
+    QCOMPARE(display.characterAtForTest(8, 0).character, U'i');
+    QVERIFY(display.characterAtForTest(9, 0).isSpace());   // 段尾让位空白
+    QCOMPARE(display.characterAtForTest(0, 1).character, U'中');
+    QCOMPARE(display.characterAtForTest(0, 2).character, U'r');
 }
 
 QTEST_MAIN(TestLineWrap)
