@@ -1105,6 +1105,15 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
             // This still allows RTL characters to be rendered in the RTL way.
             painter.setLayoutDirection(Qt::LeftToRight);
 
+            // 比例字体：片段已逐格拆分（单格；宽字符片段为双格），字形可能
+            // 宽于格子——裁剪到片段矩形，越界部分不绘制、不留陈旧墨迹。
+            // 等宽字体字形度量与格子一致，保持无裁剪现状（像素等价保障）。
+            const bool clipToCell = !_fixedFont;
+            if (clipToCell) {
+                painter.save();
+                painter.setClipRect(rect, Qt::IntersectClip);
+            }
+
             if (_bidiEnabled) {
                 if (tooWide) {
                     QRect drawRect(rect.topLeft(), rect.size());
@@ -1121,6 +1130,9 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
                 drawRect.setHeight(rect.height() + _drawTextAdditionHeight);
                 painter.drawText(drawRect, Qt::AlignBottom, LTR_OVERRIDE_CHAR + QString::fromStdU32String(text));
             }
+
+            if (clipToCell)
+                painter.restore();
         }
     }
 
@@ -2858,7 +2870,10 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             char32_t nxtC = 0;
             bool nxtDoubleWidth = false;
             int nxtCharWidth = 0;
-            while (x + len <= rlx &&
+            // 比例字体（_fixedFont == false）不合并片段：每列独立成片段，
+            // 逐格绘制在格子左边界并由 drawCharacters 裁剪到格子（网格化渲染）；
+            // 等宽字体保持原有合并（连字整形依赖整段绘制，逐字绘制会破坏连字）
+            while (_fixedFont && x + len <= rlx &&
                         _image[loc(x + len, y)].foregroundColor == currentForeground &&
                         _image[loc(x + len, y)].backgroundColor == currentBackground &&
                         _image[loc(x + len, y)].underlineColor == currentUnderlineColor &&
@@ -2899,9 +2914,6 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             if ((x + len < _usedColumns) && (!_image[loc(x + len, y)].character))
                 len++; // Adjust for trailing part of multi-column character
 
-            bool save__fixedFont = _fixedFont;
-            if (lineDraw)
-                _fixedFont = false;
             unistr.resize(p);
 
             // Create a text scaling matrix for double width and double height lines.
@@ -2931,8 +2943,6 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             const QPoint buf = mapDisplayToBuffer(x, y);
             drawTextFragment(paint, textArea, unistr, &_image[loc(x, y)], tooWide,
                              _screenWindow->isSelected(buf.x(), buf.y()));
-
-            _fixedFont = save__fixedFont;
 
             // reset back to single-width, single-height _lines
             if (hasTextScale)
@@ -3019,7 +3029,10 @@ void TerminalDisplay::drawContentsLegacy(QPainter &paint, const QRect &rect) {
             char32_t nxtC = 0;
             bool nxtDoubleWidth = false;
             int nxtCharWidth = 0;
-            while (x + len <= rlx &&
+            // 比例字体（_fixedFont == false）不合并片段：每列独立成片段，
+            // 逐格绘制在格子左边界并由 drawCharacters 裁剪到格子（网格化渲染）；
+            // 等宽字体保持原有合并（连字整形依赖整段绘制，逐字绘制会破坏连字）
+            while (_fixedFont && x + len <= rlx &&
                         _image[loc(x + len, y)].foregroundColor == currentForeground &&
                         _image[loc(x + len, y)].backgroundColor == currentBackground &&
                         _image[loc(x + len, y)].underlineColor == currentUnderlineColor &&
@@ -3060,9 +3073,6 @@ void TerminalDisplay::drawContentsLegacy(QPainter &paint, const QRect &rect) {
             if ((x + len < _usedColumns) && (!_image[loc(x + len, y)].character))
                 len++; // Adjust for trailing part of multi-column character
 
-            bool save__fixedFont = _fixedFont;
-            if (lineDraw)
-                _fixedFont = false;
             unistr.resize(p);
 
             // Create a text scaling matrix for double width and double height lines.
@@ -3089,8 +3099,6 @@ void TerminalDisplay::drawContentsLegacy(QPainter &paint, const QRect &rect) {
             const QPoint buf = mapDisplayToBuffer(x, y);
             drawTextFragment(paint, textArea, unistr, &_image[loc(x, y)], tooWide,
                              _screenWindow->isSelected(buf.x(), buf.y()));
-
-            _fixedFont = save__fixedFont;
 
             // reset back to single-width, single-height _lines
             paint.setWorldTransform(textScale.inverted(), true);
