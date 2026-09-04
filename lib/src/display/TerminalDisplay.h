@@ -837,8 +837,6 @@ private:
     /** @brief 同步输出攒帧期间存在被推迟的重绘时，立即补刷一帧。 */
     void flushSynchronizedOutput();
 
-    // determine the width of this text
-    int textWidth(int startColumn, int length, int line) const;
     // determine the area that encloses this series of characters
     // 双高/双宽行：行顶随原点一并逆映射（横向列偏移不逆映射，DECDWL 语义）
     QRect calculateTextArea(int topLeftX, int topLeftY, int startColumn, int line, int length,
@@ -1073,8 +1071,8 @@ private:
     QGridLayout* _gridLayout;
 
     CharWidth *_charWidth;
-    bool _fixedFont; // has fixed pitch
-    bool _fixedFont_original; // used only in textWidth()
+    bool _fixedFont; // REPCHAR 各字形等宽判定结果：门控片段拆分/合并与超宽字形
+                     // 检测，不再切换排版路径（比例字体同样永远网格渲染）
     int  _fontHeight;     // height
     int  _fontWidth;     // width
     int  _fontAscent;     // ascend

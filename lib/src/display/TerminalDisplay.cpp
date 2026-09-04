@@ -257,8 +257,6 @@ void TerminalDisplay::fontChange(const QFont &) {
         }
     }
 
-    _fixedFont_original = _fixedFont;
-
     if (_fontWidth < 1)
         _fontWidth = 1;
 
@@ -2564,34 +2562,15 @@ void TerminalDisplay::paintFilters(QPainter &painter) {
     }
 }
 
-// NOTE: This should be called only when "_fixedFont" is set to "false" (temporarily).
-int TerminalDisplay::textWidth(const int startColumn, const int length, const int line) const {
-    QFontMetrics fm(font());
-    int result = 0;
-    for (int column = 0; column < length; column++) {
-        auto c = _image[loc(startColumn + column, line)];
-        // Take care of double-column characters and those with small widths.
-        // Exclude line characters, as some of them are ambiguous ('A') [1]
-        // [1] http://www.unicode.org/Public/UCD/latest/ucd/EastAsianWidth.txt
-        if (_fixedFont_original && !isLineChar(c)) { 
-            // c == 0 may happen here after a double-column character
-            result += fm.horizontalAdvance(QLatin1Char(REPCHAR[0]));
-        } else {
-            result += fm.horizontalAdvance(QChar(static_cast<uint>(c.character)));
-        }
-    }
-    return result;
-}
-
 QRect TerminalDisplay::calculateTextArea(int topLeftX, int topLeftY,
                                             int startColumn, int line,
                                             int length,
                                             const QTransform &textScale) {
-    const int left =
-            _fixedFont ? _fontWidth * startColumn : textWidth(0, startColumn, line);
+    // 永远网格定位：比例字体同样每字符一格（逐格片段 + 单格裁剪，
+    // 见 drawContents/drawCharacters），不存在比例累积偏移
+    const int left = _fontWidth * startColumn;
     const int top = _fontHeight * line;
-    const int width =
-            _fixedFont ? _fontWidth * length : textWidth(startColumn, length, line);
+    const int width = _fontWidth * length;
     // 逆映射一致化（DECDH 根治）：行顶 top 并入逆映射点，scale(1,2) 下墨迹落在
     // 该行自身行带（旧实现只逆映射原点，top 未经逆映射，墨迹落在 2× 行坐标处，
     // 行矩形脏区盖不住、增量重绘必留残影）。横向 left 保持不逆映射：DECDWL 下
@@ -3830,15 +3809,9 @@ void TerminalDisplay::getCharacterPosition(const QPointF &widgetPoint,
     if (line >= _usedLines)
         line = _usedLines - 1;
 
-    int x =
+    const int x =
             widgetPoint.x() + _fontWidth / 2 - contentsRect().left() - _leftMargin;
-    if (_fixedFont)
-        column = x / _fontWidth;
-    else {
-        column = 0;
-        while (column + 1 < _usedColumns && x > textWidth(0, column + 1, line))
-            column++;
-    }
+    column = x / _fontWidth;
 
     if (column < 0)
         column = 0;
