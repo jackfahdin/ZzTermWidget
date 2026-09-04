@@ -1463,7 +1463,7 @@ void TestRendering::testProportionalFontWideCharsClippedAtGridRightEdge()
     QVERIFY(inkPixels(img, cellRect(display, 79, 0)) > 0);
     const int gridRight = 1 + 80 * display.fontWidth();
     const QRect beyond(gridRight, 0,
-                       display.width() - gridRight, display.fontHeight() + 2);
+                       qMax(0, display.width() - gridRight), display.fontHeight() + 2);
     QCOMPARE(inkPixels(img, beyond), 0);
 }
 

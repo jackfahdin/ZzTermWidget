@@ -2872,7 +2872,9 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             int nxtCharWidth = 0;
             // 比例字体（_fixedFont == false）不合并片段：每列独立成片段，
             // 逐格绘制在格子左边界并由 drawCharacters 裁剪到格子（网格化渲染）；
-            // 等宽字体保持原有合并（连字整形依赖整段绘制，逐字绘制会破坏连字）
+            // 等宽字体保持原有合并（连字整形依赖整段绘制，逐字绘制会破坏连字）。
+            // 代价是逐格拆分同时放弃 bidi 跨字整形（阿语等上下文形变）：
+            // 终端网格语义与整形天然冲突，与 xterm/Konsole 一致，有意接受
             while (_fixedFont && x + len <= rlx &&
                         _image[loc(x + len, y)].foregroundColor == currentForeground &&
                         _image[loc(x + len, y)].backgroundColor == currentBackground &&
@@ -3031,7 +3033,9 @@ void TerminalDisplay::drawContentsLegacy(QPainter &paint, const QRect &rect) {
             int nxtCharWidth = 0;
             // 比例字体（_fixedFont == false）不合并片段：每列独立成片段，
             // 逐格绘制在格子左边界并由 drawCharacters 裁剪到格子（网格化渲染）；
-            // 等宽字体保持原有合并（连字整形依赖整段绘制，逐字绘制会破坏连字）
+            // 等宽字体保持原有合并（连字整形依赖整段绘制，逐字绘制会破坏连字）。
+            // 代价是逐格拆分同时放弃 bidi 跨字整形（阿语等上下文形变）：
+            // 终端网格语义与整形天然冲突，与 xterm/Konsole 一致，有意接受
             while (_fixedFont && x + len <= rlx &&
                         _image[loc(x + len, y)].foregroundColor == currentForeground &&
                         _image[loc(x + len, y)].backgroundColor == currentBackground &&
