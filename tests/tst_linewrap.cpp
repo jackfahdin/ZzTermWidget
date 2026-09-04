@@ -51,6 +51,8 @@ private slots:
     void softWrapScrollRange();
     void softWrapSelectionHighlight();
     void hscrollSelectionHighlight();
+    void integrationNoWrapHScroll();
+    void integrationSoftWrapAfterShrink();
 };
 
 void TestLineWrap::screenLineLength()
@@ -415,6 +417,99 @@ void TestLineWrap::hscrollSelectionHighlight()
     QVERIFY2(selected + 40 < unselected,
              qPrintable(QStringLiteral("selected=%1 unselected=%2")
                                 .arg(selected).arg(unselected)));
+}
+
+void TestLineWrap::integrationNoWrapHScroll()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列：25 字符一行放下、不折行
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    // 初始显示网格 30 列 × 3 行：整条 25 字符行在宽窗口下完整可见
+    display.resize(30 * display.fontWidth() + 2, 3 * display.fontHeight() + 2);
+    display.show();
+
+    const QByteArray text("abcdefghijklmnopqrstuvwxy");
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);
+    QVERIFY(!display.hScrollBarVisibleForTest());   // 行未超宽：横向条不出现
+    QCOMPARE(display.characterAtForTest(24, 0).character, U'y');
+
+    // 缩窄到 10 列：夹具未接仿真层尺寸回报，手动触发输出变更驱动 updateImage
+    display.resize(10 * display.fontWidth() + 2, 3 * display.fontHeight() + 2);
+    win->notifyOutputChanged();
+    QTest::qWait(50);
+
+    // 超宽行撑出横向滚动条（range = 25 - 10 = 15，条吃掉一行后余 2 个显示行）
+    QVERIFY(display.hScrollBarVisibleForTest());
+    QCOMPARE(display.hScrollBarMaximumForTest(), 15);
+
+    // Shift+滚轮向下：水平视口右移 4 列，(0,0) 处变为原行第 5 个字符
+    const QPointF center(display.width() / 2.0, display.height() / 2.0);
+    QWheelEvent wheelDown(center, center, QPoint(0, 0), QPoint(0, -120),
+                          Qt::NoButton, Qt::ShiftModifier,
+                          Qt::NoScrollPhase, false);
+    QApplication::sendEvent(&display, &wheelDown);
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'e');
+
+    // 切到 SoftWrap：横向条隐藏，25 字符行折叠为 3 个显示段
+    // （条隐藏当帧重算网格，末段留给下一帧合成，这里只断言已稳定的前两段）
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    win->notifyOutputChanged();
+    QTest::qWait(50);
+    QVERIFY(!display.hScrollBarVisibleForTest());
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'a');
+    QCOMPARE(display.characterAtForTest(0, 1).character, U'k');
+
+    // 切回 NoWrap：模式切换把水平偏移拉回 0，横向条随超宽行重新出现
+    display.setLineWrapMode(QTermWidget::LineWrapMode::NoWrap);
+    win->notifyOutputChanged();
+    QTest::qWait(50);
+    QVERIFY(display.hScrollBarVisibleForTest());
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'a');
+}
+
+void TestLineWrap::integrationSoftWrapAfterShrink()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列：25 字符一行放下、不折行
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 初始显示网格 30 列 × 3 行：宽窗口下 25 字符行只占一个显示段
+    display.resize(30 * display.fontWidth() + 2, 3 * display.fontHeight() + 2);
+    display.show();
+
+    const QByteArray text("abcdefghijklmnopqrstuvwxy");
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'a');
+    QCOMPARE(display.characterAtForTest(24, 0).character, U'y');
+    QVERIFY(!display.hScrollBarVisibleForTest());   // SoftWrap 下横向条恒隐藏
+
+    // 缩窄到 10 列：同一缓冲行重新折叠为 3 个显示段（首字符 a/k/u），
+    // 夹具未接仿真层尺寸回报，手动触发输出变更驱动 updateImage 重建映射表
+    display.resize(10 * display.fontWidth() + 2, 3 * display.fontHeight() + 2);
+    win->notifyOutputChanged();
+    QTest::qWait(50);
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'a');
+    QCOMPARE(display.characterAtForTest(0, 1).character, U'k');
+    QCOMPARE(display.characterAtForTest(0, 2).character, U'u');
+    QVERIFY(!display.hScrollBarVisibleForTest());
 }
 
 QTEST_MAIN(TestLineWrap)
