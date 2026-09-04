@@ -526,8 +526,9 @@ void Screen::getLineSlice(int line, int startCol, int count, Character* dest) co
         for (int i = 0; i < copyCount; ++i)
             dest[i] = imgLine[startCol + i];
     }
-    // 光标高亮，与 getImage 的 RE_CURSOR 行为一致
-    if (line - histLines == cuY && cuX >= startCol && cuX < startCol + count)
+    // 光标高亮：与 getImage 一致受 MODE_Cursor 门控——DECRST 25 隐藏光标后
+    // 不置 RE_CURSOR（合成路径的消费端以「无 RE_CURSOR == 光标隐藏」为不变式）
+    if (getMode(MODE_Cursor) && line - histLines == cuY && cuX >= startCol && cuX < startCol + count)
         dest[cuX - startCol].rendition |= RE_CURSOR;
 }
 

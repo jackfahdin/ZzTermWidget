@@ -66,6 +66,8 @@ private slots:
     void softWrapDoubleHeightLineMapping();
     void doubleHeightMappingNoWrapRegression();
     void softWrapDoubleHeightTruncated();
+    void screenLineSliceCursorGate();
+    void softWrapCursorHiddenByDecrst25();
 };
 
 void TestLineWrap::screenLineLength()
@@ -993,6 +995,64 @@ void TestLineWrap::softWrapDoubleHeightTruncated()
     QCOMPARE(display.bufferLineForDisplayRowForTest(2), 1);
     QVERIFY(display.linePropertyForDisplayRowForTest(2) & LINE_DOUBLEHEIGHT);
     display.grab();
+}
+
+void TestLineWrap::screenLineSliceCursorGate()
+{
+    Screen screen(4, 10);
+    screen.displayCharacter(U'a');
+    screen.displayCharacter(U'b');
+    // 光标停在 (2, 0)：MODE_Cursor 默认开，切片须在光标格置 RE_CURSOR
+    Character dest[10];
+    screen.getLineSlice(0, 0, 10, dest);
+    QVERIFY(dest[2].rendition & RE_CURSOR);
+
+    // DECRST 25 隐藏光标（MODE_Cursor 关）：切片不得再置 RE_CURSOR，
+    // 与 getImage 的门控一致（redrawCursorOverImages 依赖「无 RE_CURSOR == 光标隐藏」）
+    screen.resetMode(MODE_Cursor);
+    screen.getLineSlice(0, 0, 10, dest);
+    QVERIFY(!(dest[2].rendition & RE_CURSOR));
+
+    // 恢复显示后门控重新放开
+    screen.setMode(MODE_Cursor);
+    screen.getLineSlice(0, 0, 10, dest);
+    QVERIFY(dest[2].rendition & RE_CURSOR);
+}
+
+void TestLineWrap::softWrapCursorHiddenByDecrst25()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列：内容一行放下
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格 10 列 × 5 行
+    display.resize(10 * display.fontWidth() + 2, 5 * display.fontHeight() + 2);
+
+    // 短行 "abc"：cuX == 3 == 有效长度，合成视图在 (3, 0) 画光标块
+    emu.receiveData("abc", 3);
+    QTest::qWait(50);
+    QVERIFY(display.characterAtForTest(3, 0).rendition & RE_CURSOR);
+
+    // DECRST 25 隐藏光标：合成路径（getLineSlice）不得再置 RE_CURSOR——
+    // 回归：getLineSlice 曾无条件打光标标记，隐藏光标后合成视图仍画光标块
+    emu.receiveData("\x1b[?25l", 6);
+    win->notifyOutputChanged();   // 纯模式切换不产生输出变更，手动驱动一帧
+    QTest::qWait(50);
+    QVERIFY(!(display.characterAtForTest(3, 0).rendition & RE_CURSOR));
+
+    // DECSET 25 恢复：光标块回到合成图像
+    emu.receiveData("\x1b[?25h", 6);
+    win->notifyOutputChanged();
+    QTest::qWait(50);
+    QVERIFY(display.characterAtForTest(3, 0).rendition & RE_CURSOR);
 }
 
 QTEST_MAIN(TestLineWrap)
