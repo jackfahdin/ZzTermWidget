@@ -985,7 +985,9 @@ private:
      * @return (cx, cy)：内部经 mapBufferToDisplay 换回显示行列（SoftWrap 折叠行
      *         映射回显示行，NoWrap 列去掉水平偏移，经典模式恒等），再加 1；
      *         行方向沿用滚动条修正（value - maximum，相对窗口底部）。
-     *         行尾后一格等不可见位置以可视网格边界兜底。
+     *         行尾后一格等不可见位置退回相邻列定行；SoftWrap 折叠段内容尾后
+     *         空白格（双重映射失败）经 _displayRows 反查该缓冲行实际显示行，
+     *         其余不可达情形以可视网格边界兜底。
      */
     QPoint mouseReportPosition(int bufColumn, int bufLine) const;
 

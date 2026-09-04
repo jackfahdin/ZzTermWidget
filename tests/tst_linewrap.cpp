@@ -89,6 +89,7 @@ private slots:
     void multiLineHotSpotUnderlineSoftWrap();
     void softWrapMouseSignalCoordinates();
     void noWrapMouseSignalCoordinates();
+    void softWrapMouseSignalBlankTailRow();
 };
 
 void TestLineWrap::screenLineLength()
@@ -1216,6 +1217,55 @@ void TestLineWrap::noWrapMouseSignalCoordinates()
     QVERIFY(spy.size() >= 1);
     QCOMPARE(spy.at(0).at(1).toInt(), 3);
     QCOMPARE(spy.at(0).at(2).toInt(), 1);
+}
+
+void TestLineWrap::softWrapMouseSignalBlankTailRow()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(3, 30);              // 缓冲 3 行 × 30 列
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格 10 列 × 6 行
+    display.resize(10 * display.fontWidth() + 2, 6 * display.fontHeight() + 2);
+
+    // 缓冲行 0：25 字符折叠为显示行 0..2；缓冲行 1：短行 "abc" 占显示行 3
+    // （段 cellCount == 3，内容尾后空白格不属任何段）；缓冲行 2 空行占显示行 4
+    emu.receiveData("abcdefghijklmnopqrstuvwxy", 25);
+    emu.receiveData("\r\n", 2);
+    emu.receiveData("abc", 3);
+    QTest::qWait(50);
+
+    display.setUsesMouse(false);   // 鼠标事件上报给终端程序（而非选区）
+    QSignalSpy spy(&display, &TerminalDisplay::mouseSignal);
+
+    const int fw = display.fontWidth();
+    const int fh = display.fontHeight();
+    // 点击短行内容区（显示行 3 列 1）：cy = 4
+    QTest::mouseClick(&display, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(1 + fw, 1 + 3 * fh));
+    // 点击同一显示行内容尾后 ≥2 格空白（列 7）：段 cellCount 不含空白、
+    // mapDisplayToBuffer 不按 cellCount 钳列，双重映射失败——
+    // 回归：兜底把缓冲行 1 直接当显示行报 cy = 2（上方折叠行未被计入），
+    // 须经 _displayRows 反查实际显示行，与内容区点击同为 cy = 4
+    QTest::mouseClick(&display, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(1 + 7 * fw, 1 + 3 * fh));
+    // 空行（[0,1) 单格段）第 ≥2 列：同理应报显示行 4 → cy = 5
+    QTest::mouseClick(&display, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(1 + 5 * fw, 1 + 4 * fh));
+
+    QVERIFY(spy.size() >= 6);   // 每次点击 = 按下 + 释放两次上报
+    QCOMPARE(spy.at(0).at(2).toInt(), 4);   // 内容区
+    QCOMPARE(spy.at(2).at(2).toInt(), 4);   // 内容尾后空白
+    QCOMPARE(spy.at(2).at(1).toInt(), 8);   // 列方向不变（显示列 7 → cx = 8）
+    QCOMPARE(spy.at(4).at(2).toInt(), 5);   // 空行第 6 列
 }
 
 QTEST_MAIN(TestLineWrap)

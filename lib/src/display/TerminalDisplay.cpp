@@ -1639,12 +1639,42 @@ QPoint TerminalDisplay::mouseReportPosition(int bufColumn, int bufLine) const {
     QPoint disp = mapBufferToDisplay(bufColumn, bufLine);
     if (disp.x() < 0 || disp.y() < 0) {
         // charColumn == _usedColumns（行尾后一格）等位置不属任何折叠段或越出
-        // 水平视口：退回行内相邻列定行、列取其后一格；双重失败再以网格边界兜底
+        // 水平视口：退回行内相邻列定行、列取其后一格
         const QPoint inner = mapBufferToDisplay(qMax(0, bufColumn - 1), bufLine);
-        if (inner.x() >= 0 && inner.y() >= 0)
+        if (inner.x() >= 0 && inner.y() >= 0) {
             disp = {qMin(inner.x() + 1, _columns), inner.y()};
-        else
+        } else if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap) {
+            // 折叠段内容尾后的空白格：段 cellCount 只计有效内容（空行更是只有
+            // [0,1) 单格段），而 mapDisplayToBuffer 不按 cellCount 钳列，双重
+            // 映射失败。行经 _displayRows 反查该缓冲行实际可见的显示行——不能
+            // 把 bufLine 直接当显示行（上方有折叠行时行号偏小）
+            int owner = -1;
+            for (int i = 0; i < _displayRows.size(); ++i) {
+                const DisplayRow &row = _displayRows[i];
+                if (row.bufferLine == bufLine && bufColumn >= row.columnOffset
+                    && bufColumn < row.columnOffset + _columns) {
+                    owner = i;   // 首个命中：段空白尾归本段（让位段与下段列跨度交叠时归前段）
+                    break;
+                }
+            }
+            if (owner < 0) {
+                // 列越过该行全部段跨度：落到该行最后一个可见段
+                for (int i = _displayRows.size() - 1; i >= 0; --i)
+                    if (_displayRows[i].bufferLine == bufLine) {
+                        owner = i;
+                        break;
+                    }
+            }
+            // owner < 0（缓冲行当前不可见）在鼠标路径下不可达，纯防御
+            disp = owner >= 0
+                    ? QPoint{qBound(0, bufColumn - _displayRows[owner].columnOffset, _columns),
+                             owner}
+                    : QPoint{qBound(0, bufColumn, _columns),
+                             qBound(0, bufLine, _lines - 1)};
+        } else {
+            // NoWrap/经典：行方向恒等，列越出水平视口时以网格边界兜底
             disp = {qBound(0, bufColumn, _columns), qBound(0, bufLine, _lines - 1)};
+        }
     }
     // 协议坐标 1 基；行方向沿用滚动条修正（value - maximum，相对窗口底部）
     return {disp.x() + 1, disp.y() + 1 + _scrollBar->value() - _scrollBar->maximum()};
