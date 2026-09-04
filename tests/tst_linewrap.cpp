@@ -55,6 +55,8 @@ private slots:
     void integrationSoftWrapAfterShrink();
     void hscrollOffsetClampOnResize();
     void hscrollModifierKeyNoReset();
+    void foldMapWideAware();
+    void softWrapWideCharBoundary();
 };
 
 void TestLineWrap::screenLineLength()
@@ -593,6 +595,72 @@ void TestLineWrap::hscrollModifierKeyNoReset()
     // 实际文本输入（text 非空）：打字即回到光标处，偏移回零
     QTest::keyClick(&display, Qt::Key_X);
     QCOMPARE(display.characterAtForTest(0, 0).character, U'a');
+}
+
+void TestLineWrap::foldMapWideAware()
+{
+    // 段尾落在宽字符首格：边界前移一格，宽字符整体进入下一段
+    const QVector<int> lengths = {20};
+    QVector<bool> heads(20, false);
+    heads[9] = true;    // 单元格 9 是宽字符首格（占 9-10 两格）
+    const auto rows = buildFoldMapWideAware(lengths, {heads}, 10, 10);
+    QCOMPARE(rows.size(), 3);
+    QCOMPARE(rows[0], (DisplayRow{0, 0, 9}));    // 段尾让位：9 格
+    QCOMPARE(rows[1], (DisplayRow{0, 9, 10}));   // 宽字符在此段内完整
+    QCOMPARE(rows[2], (DisplayRow{0, 19, 1}));
+
+    // 无宽字符：与等宽切分一致
+    const auto plain = buildFoldMapWideAware(lengths, {{}}, 10, 10);
+    QCOMPARE(plain.size(), 2);
+    QCOMPARE(plain[0], (DisplayRow{0, 0, 10}));
+    QCOMPARE(plain[1], (DisplayRow{0, 10, 10}));
+
+    // 空行计 1 段；短行单段
+    const auto misc = buildFoldMapWideAware({0, 5}, {{}, {}}, 10, 10);
+    QCOMPARE(misc.size(), 2);
+    QCOMPARE(misc[1], (DisplayRow{1, 0, 5}));
+
+    // 宽字符恰好在段首：不让位（段内至少保留 1 格），列数 1 时退化为逐格切分
+    const auto narrow = buildFoldMapWideAware({2}, {{true, true}}, 1, 10);
+    QCOMPARE(narrow.size(), 2);
+}
+
+void TestLineWrap::softWrapWideCharBoundary()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列：内容一行放下
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格 10 列 × 5 行
+    display.resize(10 * display.fontWidth() + 2, 5 * display.fontHeight() + 2);
+
+    // 20 个单元格：a..i（0-8）、中（9-10，宽字符）、j..r（11-19）。
+    // 等宽切分会把「中」拆在显示行 0 末格（首格）与显示行 1 首格（填充格）；
+    // 宽度感知折叠把边界前移到 9：规格承诺「宽字符不会被拆半」
+    const QByteArray text = QByteArray("abcdefghi")
+                            + QString::fromUtf16(u"中").toUtf8()
+                            + QByteArray("jklmnopqr");
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);
+
+    // 显示行 0：a..i 共 9 格 + 段尾让位空白
+    QCOMPARE(display.characterAtForTest(8, 0).character, U'i');
+    QVERIFY(display.characterAtForTest(9, 0).isSpace());
+    // 显示行 1：宽字符首格与填充格完整落在段内，随后 j..q
+    QCOMPARE(display.characterAtForTest(0, 1).character, U'中');
+    QCOMPARE(display.characterAtForTest(1, 1).character, char32_t(0));   // 填充格
+    QCOMPARE(display.characterAtForTest(2, 1).character, U'j');
+    QCOMPARE(display.characterAtForTest(9, 1).character, U'q');
+    // 显示行 2：末段单字符 r
+    QCOMPARE(display.characterAtForTest(0, 2).character, U'r');
 }
 
 QTEST_MAIN(TestLineWrap)

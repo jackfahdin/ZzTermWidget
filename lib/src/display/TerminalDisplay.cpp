@@ -1476,12 +1476,33 @@ bool TerminalDisplay::composeViewImage(Character *dest) {
                 || (props[i] & (LINE_DOUBLEWIDTH | LINE_DOUBLEHEIGHT)))
                 lengths[i] = qMin(lengths[i], _columns);
         }
-        _displayRows = buildFoldMap(lengths, _columns, _lines);
+        // 宽度感知折叠：为超出行取单元格数据，标记宽字符首格
+        // （首格 character 非 0、次格 character == 0，与 drawContents 判定同式），
+        // 折叠边界遇到宽字符时前移一格，宽字符不被拆半
+        QVector<QVector<bool>> wideHeads(lengths.size());
+        QVector<Character> cells;
+        for (int i = 0; i < lengths.size(); ++i) {
+            if (lengths[i] <= _columns)
+                continue;   // 单段行无折叠边界，无需宽度信息
+            cells.resize(lengths[i]);
+            _screenWindow->getWindowLineSlice(i, 0, lengths[i], cells.data());
+            QVector<bool> heads(lengths[i], false);
+            for (int c = 0; c + 1 < lengths[i]; ++c)
+                if (cells[c].character != 0 && cells[c + 1].character == 0)
+                    heads[c] = true;
+            wideHeads[i] = heads;
+        }
+        _displayRows = buildFoldMapWideAware(lengths, wideHeads, _columns, _lines);
         for (int y = 0; y < _lines; ++y) {
             if (y < _displayRows.size()) {
                 const DisplayRow &row = _displayRows[y];
+                // 段尾让位宽字符时 cellCount < _columns，剩余列补默认空格；
+                // cellCount == 0 为等宽切分旧值，视为占满整段
+                const int segCells = row.cellCount > 0 ? row.cellCount : _columns;
                 _screenWindow->getWindowLineSlice(row.bufferLine, row.columnOffset,
-                                                  _columns, dest + y * _columns);
+                                                  segCells, dest + y * _columns);
+                for (int x = segCells; x < _columns; ++x)
+                    dest[y * _columns + x] = Character();   // 默认空格
             } else {
                 for (int x = 0; x < _columns; ++x)
                     dest[y * _columns + x] = Character();   // 默认空格
@@ -1525,11 +1546,14 @@ QPoint TerminalDisplay::mapDisplayToBuffer(int x, int y) const {
 
 QPoint TerminalDisplay::mapBufferToDisplay(int bufX, int bufY) const {
     if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap) {
-        // 在折叠段中找覆盖缓冲列 bufX 的段；找不到说明该缓冲位置当前不可见
+        // 在折叠段中找覆盖缓冲列 bufX 的段；找不到说明该缓冲位置当前不可见。
+        // 覆盖判定用段内有效宽度（cellCount）：段尾让位宽字符时，宽字符首格
+        // 只属于下一段，不得被本段的尾部空白列吞掉
         for (int i = 0; i < _displayRows.size(); ++i) {
             const DisplayRow &row = _displayRows[i];
+            const int segCells = row.cellCount > 0 ? row.cellCount : _columns;
             if (row.bufferLine == bufY && bufX >= row.columnOffset
-                && bufX < row.columnOffset + _columns)
+                && bufX < row.columnOffset + segCells)
                 return {bufX - row.columnOffset, i};
         }
         return {-1, -1};
@@ -1548,13 +1572,15 @@ TerminalDisplay::displaySegmentsForRange(int bufLine, int startCol, int endCol) 
 
     if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap) {
         // 缓冲行的折叠段在 _displayRows 中连续排布，逐段求列区间交集
+        // （段内有效宽度 cellCount：段尾让位宽字符的空白列不属于本段）
         for (int i = 0; i < _displayRows.size(); ++i) {
             const DisplayRow &row = _displayRows[i];
             if (row.bufferLine != bufLine)
                 continue;
+            const int segCells = row.cellCount > 0 ? row.cellCount : _columns;
             const int segStart = qMax(startCol, row.columnOffset) - row.columnOffset;
             const int segEnd =
-                    qMin(endCol, row.columnOffset + _columns - 1) - row.columnOffset;
+                    qMin(endCol, row.columnOffset + segCells - 1) - row.columnOffset;
             if (segStart <= segEnd)
                 segments.append({i, segStart, segEnd});
         }
