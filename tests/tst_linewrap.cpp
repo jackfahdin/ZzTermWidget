@@ -57,6 +57,7 @@ private slots:
     void hscrollModifierKeyNoReset();
     void foldMapWideAware();
     void softWrapWideCharBoundary();
+    void softWrapCursorAtContentEnd();
 };
 
 void TestLineWrap::screenLineLength()
@@ -661,6 +662,42 @@ void TestLineWrap::softWrapWideCharBoundary()
     QCOMPARE(display.characterAtForTest(9, 1).character, U'q');
     // 显示行 2：末段单字符 r
     QCOMPARE(display.characterAtForTest(0, 2).character, U'r');
+}
+
+void TestLineWrap::softWrapCursorAtContentEnd()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列：内容一行放下
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格 10 列 × 5 行
+    display.resize(10 * display.fontWidth() + 2, 5 * display.fontHeight() + 2);
+
+    // 短行：输入 "abc" 后 cuX == 3 == 有效长度，段 cellCount == 3 不含光标格——
+    // 回归：光标格曾被补成无 RE_CURSOR 的默认空格，光标块从合成图像丢失
+    emu.receiveData("abc", 3);
+    QTest::qWait(50);
+    QVERIFY(display.characterAtForTest(3, 0).rendition & RE_CURSOR);
+    // 光标列经 mapBufferToDisplay 可映射（updateCursor 调度/IME 候选窗位置）
+    QCOMPARE(display.mapBufferToDisplayForTest(3, 0), QPoint(3, 0));
+
+    // 折叠行：补足到 25 字符，cuX == 25 == 有效长度，
+    // 末段 [20,25) cellCount == 5 不含光标格，所有者段切片须放宽覆盖
+    const QByteArray rest("defghijklmnopqrstuvwxy");   // 22 字符，总长 25
+    emu.receiveData(rest.constData(), static_cast<int>(rest.size()));
+    QTest::qWait(50);
+    QVERIFY(display.characterAtForTest(5, 2).rendition & RE_CURSOR);
+    QCOMPARE(display.mapBufferToDisplayForTest(25, 0), QPoint(5, 2));
+    // 段内既有内容不受影响（宽度感知折叠语义不变）
+    QCOMPARE(display.characterAtForTest(0, 2).character, U'u');
 }
 
 QTEST_MAIN(TestLineWrap)

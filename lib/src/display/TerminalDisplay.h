@@ -490,6 +490,8 @@ public:
 
     /** @brief 仅供测试：显示网格坐标 → 缓冲窗口相对坐标。 */
     QPoint mapDisplayToBufferForTest(int x, int y) const { return mapDisplayToBuffer(x, y); }
+    /** @brief 仅供测试：缓冲窗口相对坐标 → 显示网格坐标（不可见返回 QPoint(-1, -1)）。 */
+    QPoint mapBufferToDisplayForTest(int x, int y) const { return mapBufferToDisplay(x, y); }
     /** @brief 仅供测试：垂直滚动条 maximum。 */
     int vScrollBarMaximumForTest() const;
     /** @brief 仅供测试：设置垂直滚动条值（经 valueChanged 走完整滚动路径）。 */

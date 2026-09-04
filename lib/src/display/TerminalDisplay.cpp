@@ -1493,15 +1493,35 @@ bool TerminalDisplay::composeViewImage(Character *dest) {
             wideHeads[i] = heads;
         }
         _displayRows = buildFoldMapWideAware(lengths, wideHeads, _columns, _lines);
+        // 光标格放宽：光标停在有效内容末尾（cuX == len）时，末段 cellCount 是
+        // 段内有效长度、不含光标格，而 RE_CURSOR 只在切片 count 覆盖 cuX 时
+        // 烘焙（Screen::getLineSlice），光标块又没有独立绘制通道——
+        // 须把所有者段的切片放宽到覆盖光标格。
+        // 所有者取最后一个列跨度 [columnOffset, columnOffset+_columns) 含光标列
+        // 的段：宽度感知让位段的尾部空白列不抢占属于下一段的光标
+        const QPoint cursorPos = _screenWindow->cursorPosition();   // 屏幕相对
+        const int cursorBufLine = screen->getHistLines() + cursorPos.y() - topLine;
+        int cursorRowIndex = -1;
+        for (int i = 0; i < _displayRows.size(); ++i) {
+            const DisplayRow &row = _displayRows[i];
+            if (row.bufferLine == cursorBufLine && cursorPos.x() >= row.columnOffset
+                && cursorPos.x() < row.columnOffset + _columns)
+                cursorRowIndex = i;   // 持续覆写，取最后命中
+        }
         for (int y = 0; y < _lines; ++y) {
             if (y < _displayRows.size()) {
                 const DisplayRow &row = _displayRows[y];
                 // 段尾让位宽字符时 cellCount < _columns，剩余列补默认空格；
                 // cellCount == 0 为等宽切分旧值，视为占满整段
                 const int segCells = row.cellCount > 0 ? row.cellCount : _columns;
+                const int sliceCells =
+                        (y == cursorRowIndex)
+                                ? qMin(_columns,
+                                       qMax(segCells, cursorPos.x() - row.columnOffset + 1))
+                                : segCells;
                 _screenWindow->getWindowLineSlice(row.bufferLine, row.columnOffset,
-                                                  segCells, dest + y * _columns);
-                for (int x = segCells; x < _columns; ++x)
+                                                  sliceCells, dest + y * _columns);
+                for (int x = sliceCells; x < _columns; ++x)
                     dest[y * _columns + x] = Character();   // 默认空格
             } else {
                 for (int x = 0; x < _columns; ++x)
@@ -1555,6 +1575,26 @@ QPoint TerminalDisplay::mapBufferToDisplay(int bufX, int bufY) const {
             if (row.bufferLine == bufY && bufX >= row.columnOffset
                 && bufX < row.columnOffset + segCells)
                 return {bufX - row.columnOffset, i};
+        }
+        // 光标列放宽：光标停在有效内容末尾（cuX == len）时末段 cellCount 不含
+        // 光标格，但 composeViewImage 已把所有者段切片放宽覆盖光标格——此处
+        // 同步把光标列视为可见，取最后一个列跨度含光标列的段（与合成侧同一
+        // 所有者规则），否则 updateCursor 跳帧、IME 候选窗位置丢失
+        if (_screenWindow) {
+            const QPoint cp = _screenWindow->cursorPosition();
+            const int cursorBufLine = _screenWindow->screen()->getHistLines() + cp.y()
+                                      - _screenWindow->currentLine();
+            if (bufY == cursorBufLine && bufX == cp.x()) {
+                int owner = -1;
+                for (int i = 0; i < _displayRows.size(); ++i) {
+                    const DisplayRow &row = _displayRows[i];
+                    if (row.bufferLine == bufY && bufX >= row.columnOffset
+                        && bufX < row.columnOffset + _columns)
+                        owner = i;   // 持续覆写，取最后命中
+                }
+                if (owner >= 0)
+                    return {bufX - _displayRows[owner].columnOffset, owner};
+            }
         }
         return {-1, -1};
     }
