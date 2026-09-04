@@ -1633,6 +1633,20 @@ QPoint TerminalDisplay::mapBufferToDisplay(int bufX, int bufY) const {
     return {x, bufY};
 }
 
+int TerminalDisplay::bufferLineForDisplayRow(int y) const {
+    if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap
+        && y >= 0 && y < _displayRows.size())
+        return _displayRows[y].bufferLine;
+    return y;   // 其余模式显示行即缓冲行；越界恒等返回（调用方自行判空）
+}
+
+LineProperty TerminalDisplay::linePropertyForDisplayRow(int y) const {
+    const int bufLine = bufferLineForDisplayRow(y);
+    if (bufLine < 0 || bufLine >= _lineProperties.size())
+        return LineProperty(0);
+    return _lineProperties[bufLine];
+}
+
 QVector<TerminalDisplay::DisplaySegment>
 TerminalDisplay::displaySegmentsForRange(int bufLine, int startCol, int endCol) const {
     QVector<DisplaySegment> segments;
@@ -1908,22 +1922,24 @@ void TerminalDisplay::updateImage() {
         // both the top and bottom halves of double height _lines must always be
         // redrawn although both top and bottom halves contain the same characters,
         // only the top one is actually drawn.
-        if (_lineProperties.count() > y) {
-            if ((_lineProperties[y] & LINE_DOUBLEHEIGHT) != 0) {
-                updateLine = true;
-                fullLineDirty = true;
-            }
+        // _lineProperties 按缓冲窗口行索引，此处 y 是显示行，须经 _displayRows 换算
+        if ((linePropertyForDisplayRow(y) & LINE_DOUBLEHEIGHT) != 0) {
+            updateLine = true;
+            fullLineDirty = true;
         }
 
         // 滚动前后两个视图中实际含图像放置的行强制整行标脏（sixel 切片与 kitty 放置同理）：
         // 新视图含图行补画，滚动前视图含图行抹除残留。原实现的 !updateLine 短路只是省查询，
-        // 含图行无论字符脏否最终都整行脏，此处直接判定、行为不变；无图时 hasImages() 短路
+        // 含图行无论字符脏否最终都整行脏，此处直接判定、行为不变；无图时 hasImages() 短路。
+        // 显示行 y 经 bufferLineForDisplayRow 换算回缓冲行；滚动前一帧的换算沿用本帧
+        // _displayRows（旧映射未保留），属保守标脏，不错漏
+        const int dirtyBufLine = bufferLineForDisplayRow(y);
         if (hasImages
-                && (!scr->imagePlacements(viewTopLine + y).isEmpty()
-                    || !scr->kittyRefs(viewTopLine + y).isEmpty()
+                && (!scr->imagePlacements(viewTopLine + dirtyBufLine).isEmpty()
+                    || !scr->kittyRefs(viewTopLine + dirtyBufLine).isEmpty()
                     || (prevViewTopLine != viewTopLine
-                        && (!scr->imagePlacements(prevViewTopLine + y).isEmpty()
-                            || !scr->kittyRefs(prevViewTopLine + y).isEmpty())))) {
+                        && (!scr->imagePlacements(prevViewTopLine + dirtyBufLine).isEmpty()
+                            || !scr->kittyRefs(prevViewTopLine + dirtyBufLine).isEmpty())))) {
             updateLine = true;
             fullLineDirty = true;
         }
@@ -2533,9 +2549,11 @@ void TerminalDisplay::drawImagesBelowText(QPainter &paint, const QRect &rect)
                          qMax(0, (rect.bottom() - tL.y() - _topMargin) / _fontHeight));
     const int topLine = _screenWindow->currentLine(); // 窗口第 0 行对应的绝对行
 
-    // sixel 图像切片（文本下层，xterm/wezterm 语义）
+    // sixel 图像切片（文本下层，xterm/wezterm 语义）。
+    // 图像放置锚定缓冲行（绝对行 = 窗口顶 + 缓冲窗口相对行），显示行 y 须经
+    // bufferLineForDisplayRow 换算（SoftWrap 折叠段映射回同一缓冲行）
     for (int y = luy; y <= rly; y++) {
-        const auto placements = screen->imagePlacements(topLine + y);
+        const auto placements = screen->imagePlacements(topLine + bufferLineForDisplayRow(y));
         for (const ImagePlacement &p : placements) {
             const ScreenImage *img = screen->image(p.imageId);
             if (!img)
@@ -2586,7 +2604,8 @@ void TerminalDisplay::drawKittyPlacements(QPainter &paint, const QRect &rect, bo
     // 引用行各自落在正确视图行，图像随文本切割。带恒落在本行行带内，多 rect 局部
     // 重绘的半透明重复混合结构性消除（无需 seenHandles 去重）。
     for (int y = luy; y <= rly; y++) {
-        const auto refs = screen->kittyRefs(topLine + y);
+        // kitty 引用锚定缓冲行：显示行 y 经 bufferLineForDisplayRow 换算
+        const auto refs = screen->kittyRefs(topLine + bufferLineForDisplayRow(y));
         if (refs.isEmpty())
             continue;
         struct RowItem {
@@ -2674,7 +2693,9 @@ void TerminalDisplay::redrawCursorOverImages(QPainter &paint)
     const int topLine = _screenWindow->currentLine();
     bool covered = false;
     for (int y = 0; y < _usedLines && !covered; y++) {
-        for (const KittyPlacementRef &ref : screen->kittyRefs(topLine + y)) {
+        // kitty 引用锚定缓冲行：显示行 y 经 bufferLineForDisplayRow 换算
+        for (const KittyPlacementRef &ref :
+             screen->kittyRefs(topLine + bufferLineForDisplayRow(y))) {
             const KittyPlacement *pl = screen->kittyPlacement(ref.placementHandle);
             if (!pl || pl->zIndex < 0)
                 continue;
@@ -2838,13 +2859,14 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             // Create a text scaling matrix for double width and double height lines.
             QTransform textScale;
 
-            if (y < _lineProperties.size()) {
-                if (_lineProperties[y] & LINE_DOUBLEWIDTH)
-                    textScale.scale(2, 1);
+            // _lineProperties 按缓冲窗口行索引，此处 y 是显示行：
+            // SoftWrap 下经 _displayRows 换算（折叠段映射回同一缓冲行）
+            const LineProperty lineProps = linePropertyForDisplayRow(y);
+            if (lineProps & LINE_DOUBLEWIDTH)
+                textScale.scale(2, 1);
 
-                if (_lineProperties[y] & LINE_DOUBLEHEIGHT)
-                    textScale.scale(1, 2);
-            }
+            if (lineProps & LINE_DOUBLEHEIGHT)
+                textScale.scale(1, 2);
 
             // 无行缩放时跳过恒等世界变换的压栈/还原，减少每片段 QPainter 状态操作；
             // calculateTextArea 内部对恒等变换求逆结果不变，像素输出不受影响
@@ -2875,7 +2897,10 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
         // 本行全部片段绘制完成后跳过下半副本行。该跳过必须位于行内片段（x）
         // 循环之外：若在循环内执行，行内第二个及后续片段会以 y+1 画线并读到
         // 下一行的字符（多片段双高行——如行内存在光标/样式分片——会错行绘制）
-        if (y < _lineProperties.size() - 1 && (_lineProperties[y] & LINE_DOUBLEHEIGHT))
+        // 跳行防御校验：下一显示行必须是当前缓冲行的下一缓冲行（双高副本对
+        // 未被折叠段/占位段/视口截断拆开）才跳过，错位时不误跳
+        if ((linePropertyForDisplayRow(y) & LINE_DOUBLEHEIGHT)
+            && bufferLineForDisplayRow(y + 1) == bufferLineForDisplayRow(y) + 1)
             y++;
     }
 }
@@ -2995,13 +3020,14 @@ void TerminalDisplay::drawContentsLegacy(QPainter &paint, const QRect &rect) {
             // Create a text scaling matrix for double width and double height lines.
             QTransform textScale;
 
-            if (y < _lineProperties.size()) {
-                if (_lineProperties[y] & LINE_DOUBLEWIDTH)
-                    textScale.scale(2, 1);
+            // _lineProperties 按缓冲窗口行索引，此处 y 是显示行：
+            // SoftWrap 下经 _displayRows 换算（折叠段映射回同一缓冲行）
+            const LineProperty lineProps = linePropertyForDisplayRow(y);
+            if (lineProps & LINE_DOUBLEWIDTH)
+                textScale.scale(2, 1);
 
-                if (_lineProperties[y] & LINE_DOUBLEHEIGHT)
-                    textScale.scale(1, 2);
-            }
+            if (lineProps & LINE_DOUBLEHEIGHT)
+                textScale.scale(1, 2);
 
             // Apply text scaling matrix.
             paint.setWorldTransform(textScale, true);
@@ -3028,7 +3054,10 @@ void TerminalDisplay::drawContentsLegacy(QPainter &paint, const QRect &rect) {
         // 本行全部片段绘制完成后跳过下半副本行。该跳过必须位于行内片段（x）
         // 循环之外：若在循环内执行，行内第二个及后续片段会以 y+1 画线并读到
         // 下一行的字符（多片段双高行——如行内存在光标/样式分片——会错行绘制）
-        if (y < _lineProperties.size() - 1 && (_lineProperties[y] & LINE_DOUBLEHEIGHT))
+        // 跳行防御校验：下一显示行必须是当前缓冲行的下一缓冲行（双高副本对
+        // 未被折叠段/占位段/视口截断拆开）才跳过，错位时不误跳
+        if ((linePropertyForDisplayRow(y) & LINE_DOUBLEHEIGHT)
+            && bufferLineForDisplayRow(y + 1) == bufferLineForDisplayRow(y) + 1)
             y++;
     }
 }

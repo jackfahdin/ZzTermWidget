@@ -498,6 +498,10 @@ public:
     void setVScrollBarValueForTest(int value);
     /** @brief 仅供测试：设置横向滚动条值（经 valueChanged 走完整滚动路径）。 */
     void setHScrollBarValueForTest(int value);
+    /** @brief 仅供测试：显示行 y 换算后的缓冲行属性（linePropertyForDisplayRow）。 */
+    int linePropertyForDisplayRowForTest(int y) const { return linePropertyForDisplayRow(y); }
+    /** @brief 仅供测试：显示行 y 对应的缓冲窗口相对行号（bufferLineForDisplayRow）。 */
+    int bufferLineForDisplayRowForTest(int y) const { return bufferLineForDisplayRow(y); }
 
     /**
      * Sets the terminal screen section which is displayed in this widget.
@@ -960,6 +964,22 @@ private:
      * @return 每项为 (显示行, 段内起始显示列, 段内结束显示列)；不可见时为空。
      */
     QVector<DisplaySegment> displaySegmentsForRange(int bufLine, int startCol, int endCol) const;
+
+    /**
+     * @brief 显示行 y 对应的缓冲窗口相对行号。
+     * @note _lineProperties / 图像放置等按缓冲窗口行索引的表，消费端持有的是
+     *       显示行 y：SoftWrap 下经 _displayRows 换算（折叠行的后续段映射回同一
+     *       缓冲行）；其余模式显示行即缓冲行，恒等返回。越界恒等返回 y，
+     *       调用方自行判空。
+     */
+    int bufferLineForDisplayRow(int y) const;
+    /**
+     * @brief 显示行 y 对应缓冲行的行属性。
+     * @param y 显示行。
+     * @return SoftWrap 下经 _displayRows[y].bufferLine 换算后的属性；其余模式即
+     *         _lineProperties[y]；越界返回 LineProperty(0)。
+     */
+    LineProperty linePropertyForDisplayRow(int y) const;
 
     void paintFilters(QPainter& painter);
 

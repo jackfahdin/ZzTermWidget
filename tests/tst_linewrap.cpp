@@ -63,6 +63,9 @@ private slots:
     void softWrapCursorFoldBoundaryWideChar();
     void softWrapCursorFoldBoundaryClears();
     void noWrapCursorColumnInScrollRange();
+    void softWrapDoubleHeightLineMapping();
+    void doubleHeightMappingNoWrapRegression();
+    void softWrapDoubleHeightTruncated();
 };
 
 void TestLineWrap::screenLineLength()
@@ -869,6 +872,127 @@ void TestLineWrap::noWrapCursorColumnInScrollRange()
     QTest::qWait(50);
     QCOMPARE(display.characterAtForTest(0, 0).character, U'l');   // 缓冲列 11
     QVERIFY(display.characterAtForTest(9, 0).rendition & RE_CURSOR);
+}
+
+void TestLineWrap::softWrapDoubleHeightLineMapping()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(4, 30);              // 缓冲 4 行 × 30 列
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格 10 列 × 6 行
+    display.resize(10 * display.fontWidth() + 2, 6 * display.fontHeight() + 2);
+    display.show();
+
+    // 缓冲行 0：20 字符超宽行（折叠为显示行 0/1）；缓冲行 1/2：DECDHL 双高对
+    // （ESC#3 上半 / ESC#4 下半，DECDHL 同时置 LINE_DOUBLEWIDTH）
+    emu.receiveData("abcdefghijklmnopqrst", 20);
+    emu.receiveData("\r\n", 2);
+    emu.receiveData("\x1b#3", 3);
+    emu.receiveData("TOP", 3);
+    emu.receiveData("\r\n", 2);
+    emu.receiveData("\x1b#4", 3);
+    emu.receiveData("BOT", 3);
+    QTest::qWait(50);
+
+    // _lineProperties 按缓冲行索引，绘制/脏比对持有显示行 y——
+    // 回归：SoftWrap 下直查 _lineProperties[y] 导致双高属性错位
+    // （折叠行第 2 段误得双高缩放、双高对被跳过），须经 _displayRows 换算
+    QCOMPARE(display.bufferLineForDisplayRowForTest(0), 0);
+    QCOMPARE(display.bufferLineForDisplayRowForTest(1), 0);
+    QCOMPARE(display.bufferLineForDisplayRowForTest(2), 1);
+    QCOMPARE(display.bufferLineForDisplayRowForTest(3), 2);
+    QCOMPARE(display.bufferLineForDisplayRowForTest(4), 3);
+
+    QCOMPARE(display.linePropertyForDisplayRowForTest(0), 0);
+    QCOMPARE(display.linePropertyForDisplayRowForTest(1), 0);   // 折叠行第 2 段无属性
+    QVERIFY(display.linePropertyForDisplayRowForTest(2) & LINE_DOUBLEHEIGHT);
+    QVERIFY(display.linePropertyForDisplayRowForTest(3) & LINE_DOUBLEHEIGHT);
+    // 双高对相邻：副本行 bufferLine == 上行 + 1（跳行防御校验的前提）
+    QCOMPARE(display.bufferLineForDisplayRowForTest(3),
+             display.bufferLineForDisplayRowForTest(2) + 1);
+    QCOMPARE(display.linePropertyForDisplayRowForTest(4), 0);
+
+    display.grab();   // 强制走一遍双高绘制路径，不崩溃
+}
+
+void TestLineWrap::doubleHeightMappingNoWrapRegression()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(4, 30);              // 缓冲 4 行 × 30 列
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    // NoWrap，显示网格 10 列 × 6 行（20 字符行超宽撑出横向条）
+    display.resize(10 * display.fontWidth() + 2, 6 * display.fontHeight() + 2);
+    display.show();
+
+    emu.receiveData("abcdefghijklmnopqrst", 20);
+    emu.receiveData("\r\n", 2);
+    emu.receiveData("\x1b#3", 3);
+    emu.receiveData("TOP", 3);
+    emu.receiveData("\r\n", 2);
+    emu.receiveData("\x1b#4", 3);
+    emu.receiveData("BOT", 3);
+    QTest::qWait(50);
+
+    // NoWrap 行为不变：显示行即缓冲行，属性直查
+    QCOMPARE(display.bufferLineForDisplayRowForTest(2), 2);
+    QVERIFY(display.linePropertyForDisplayRowForTest(1) & LINE_DOUBLEHEIGHT);
+    QVERIFY(display.linePropertyForDisplayRowForTest(2) & LINE_DOUBLEHEIGHT);
+    QCOMPARE(display.linePropertyForDisplayRowForTest(0), 0);
+
+    display.grab();   // 双高绘制路径冒烟
+}
+
+void TestLineWrap::softWrapDoubleHeightTruncated()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(3, 30);              // 缓冲 3 行 × 30 列：与视口行数一致，窗口顶锚定行 0
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    // 显示网格 10 列 × 3 行：行 0 折叠 2 段 + 双高上半恰落最后一个显示行，
+    // 双高下半被 _lines 截断
+    display.resize(10 * display.fontWidth() + 2, 3 * display.fontHeight() + 2);
+    display.show();
+
+    emu.receiveData("abcdefghijklmnopqrst", 20);
+    emu.receiveData("\r\n", 2);
+    emu.receiveData("\x1b#3", 3);
+    emu.receiveData("TOP", 3);
+    emu.receiveData("\r\n", 2);
+    emu.receiveData("\x1b#4", 3);
+    emu.receiveData("BOT", 3);            // 末尾无换行：缓冲行 2 为双高下半，光标停此行
+    QTest::qWait(50);
+
+    // 截断场景：显示行 2 = 缓冲行 1（双高上半），副本行不在视图中——
+    // 跳行防御校验（下一显示行 bufferLine == 当前 + 1）不成立时不得误跳，
+    // 且不崩溃
+    QCOMPARE(display.bufferLineForDisplayRowForTest(2), 1);
+    QVERIFY(display.linePropertyForDisplayRowForTest(2) & LINE_DOUBLEHEIGHT);
+    display.grab();
 }
 
 QTEST_MAIN(TestLineWrap)
