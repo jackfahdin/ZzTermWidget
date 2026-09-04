@@ -54,6 +54,7 @@ private slots:
     void integrationNoWrapHScroll();
     void integrationSoftWrapAfterShrink();
     void hscrollOffsetClampOnResize();
+    void hscrollModifierKeyNoReset();
 };
 
 void TestLineWrap::screenLineLength()
@@ -552,6 +553,46 @@ void TestLineWrap::hscrollOffsetClampOnResize()
     QTest::qWait(50);
     QCOMPARE(display.hScrollBarMaximumForTest(), 3);
     QCOMPARE(display.characterAtForTest(0, 0).character, U'd');   // 偏移钳到 3
+}
+
+void TestLineWrap::hscrollModifierKeyNoReset()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列：25 字符一行放下
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    // 显示网格 10 列 × 3 行（横向条吃掉一行后余 2 行，窗口顶不漂）
+    display.resize(10 * display.fontWidth() + 2, 3 * display.fontHeight() + 2);
+    display.show();
+
+    const QByteArray text("abcdefghijklmnopqrstuvwxy");
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);
+    QVERIFY(display.hScrollBarVisibleForTest());
+
+    // Shift+滚轮向下：水平视口右移 4 列
+    const QPointF center(display.width() / 2.0, display.height() / 2.0);
+    QWheelEvent wheelDown(center, center, QPoint(0, 0), QPoint(0, -120),
+                          Qt::NoButton, Qt::ShiftModifier,
+                          Qt::NoScrollPhase, false);
+    QApplication::sendEvent(&display, &wheelDown);
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'e');
+
+    // 纯修饰键不构成输入：松开再按下 Shift（准备继续 Shift+滚轮）不得回零——
+    // 回归：keyPressEvent 曾对任意按键（含 Key_Shift 本身）重置水平偏移
+    QTest::keyClick(&display, Qt::Key_Shift);
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'e');
+
+    // 实际文本输入（text 非空）：打字即回到光标处，偏移回零
+    QTest::keyClick(&display, Qt::Key_X);
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'a');
 }
 
 QTEST_MAIN(TestLineWrap)

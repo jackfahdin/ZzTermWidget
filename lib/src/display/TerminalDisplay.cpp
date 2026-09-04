@@ -4316,8 +4316,10 @@ void TerminalDisplay::keyPressEvent(QKeyEvent *event) {
             _cursorBlinking = false;
     }
 
-    // 打字即回到光标处：任何键盘输入把水平视口偏移拉回 0
-    if (_hScrollBar && _hScrollBar->isVisible() && _hScrollOffset != 0)
+    // 打字即回到光标处：有实际文本输入才把水平视口偏移拉回 0；
+    // Shift 等纯修饰键不构成输入（text 为空），不得打断 Shift+滚轮查看超宽内容
+    if (_hScrollBar && _hScrollBar->isVisible() && _hScrollOffset != 0
+        && !event->text().isEmpty())
         _hScrollBar->setValue(0);
 
     emit keyPressedSignal(event, false);
