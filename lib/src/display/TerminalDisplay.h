@@ -946,8 +946,11 @@ private:
      * @return true 表示已合成；false 表示调用方应走 getImage() 快路径。
      */
     bool composeViewImage(Character *dest);
-    /** @brief 全缓冲（历史+屏幕）各行有效长度；只读查询，不重建 _displayRows。 */
-    QVector<int> allLineLengths() const;
+    /**
+     * @brief 确保 Screen 历史折叠缓存已按当前显示列数启用（SoftWrap 滚动条
+     *        换算路径每帧调用；已启用且列宽一致时为 no-op 比较，列宽漂移自愈）。
+     */
+    void ensureFoldCountCache();
     /** @brief 可见窗口各行有效长度（窗口相对 0..windowLines-1）。 */
     QVector<int> windowLineLengths() const;
     /** @brief 当前可见内容的最大有效行宽。 */

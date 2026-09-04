@@ -90,6 +90,11 @@ private slots:
     void softWrapMouseSignalCoordinates();
     void noWrapMouseSignalCoordinates();
     void softWrapMouseSignalBlankTailRow();
+    void softWrapFoldCacheRingDrop();
+    void softWrapFoldCachePrepend();
+    void softWrapFoldCacheClearHistory();
+    void softWrapFoldCacheResize();
+    void softWrapFoldCacheDragMapping();
 };
 
 void TestLineWrap::screenLineLength()
@@ -1266,6 +1271,172 @@ void TestLineWrap::softWrapMouseSignalBlankTailRow()
     QCOMPARE(spy.at(2).at(2).toInt(), 4);   // 内容尾后空白
     QCOMPARE(spy.at(2).at(1).toInt(), 8);   // 列方向不变（显示列 7 → cx = 8）
     QCOMPARE(spy.at(4).at(2).toInt(), 5);   // 空行第 6 列
+}
+
+/**
+ * @brief SoftWrap 折叠缓存夹具：缓冲 2 行 × 30 列，显示网格 10 列 × 5 行。
+ * @note 显示列数（10）刻意小于缓冲列数（30）：折叠缓存按显示层列数计算，
+ *       25 字符行折叠 3 段、5 字符行 1 段。
+ */
+static void initSoftWrapFoldEnv(Vt102Emulation &emu, ScreenWindow *&win,
+                                TerminalDisplay &display, int historyCapacity,
+                                int screenLines = 2, int displayRows = 5)
+{
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(historyCapacity));
+    emu.setImageSize(screenLines, 30);
+    win = emu.createWindow();
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+    display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
+    display.resize(10 * display.fontWidth() + 2, displayRows * display.fontHeight() + 2);
+}
+
+/**
+ * @brief 逐行喂 ASCII 负载（行间 \r\n，末尾无换行）。
+ * @param lengths 各行有效长度；行内容为同一字符重复（行号区分）。
+ */
+static void feedAsciiLines(Vt102Emulation &emu, const QVector<int> &lengths,
+                           int lineNoBase = 0)
+{
+    for (int i = 0; i < lengths.size(); ++i) {
+        const QByteArray line(lengths[i], char('a' + (lineNoBase + i) % 26));
+        emu.receiveData(line.constData(), static_cast<int>(line.size()));
+        if (i + 1 < lengths.size())
+            emu.receiveData("\r\n", 2);
+    }
+}
+
+void TestLineWrap::softWrapFoldCacheRingDrop()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display(nullptr);
+    initSoftWrapFoldEnv(emu, win, display, 4);   // 历史容量 4：喂满后继续喂触发满员丢行
+
+    // 6 条 25 字符行：历史 {L0..L3}（满）+ 屏幕 {L4,L5}，
+    // 每行折叠 3 段，全缓冲 6×3 = 18 个显示行
+    feedAsciiLines(emu, {25, 25, 25, 25, 25, 25});
+    QTest::qWait(50);
+    QCOMPARE(win->screen()->getHistLines(), 4);
+    QCOMPARE(display.vScrollBarMaximumForTest(), 18 - 5);
+
+    // 满员后再喂一条 5 字符短行：L4 入历史、L0 被丢——行数不变（6）但内容变，
+    // 折叠总数 4×3 + 3 + 1 = 16；丢行增量更新错误时该值失真
+    emu.receiveData("\r\n", 2);
+    feedAsciiLines(emu, {5}, 6);
+    QTest::qWait(50);
+    QCOMPARE(win->screen()->getHistLines(), 4);
+    QCOMPARE(display.vScrollBarMaximumForTest(), 16 - 5);
+
+    // 再丢一行：历史 {L2,L3,L4,L5}（12 段）+ 屏幕两条短行（各 1 段）= 14
+    emu.receiveData("\r\n", 2);
+    feedAsciiLines(emu, {5}, 7);
+    QTest::qWait(50);
+    QCOMPARE(display.vScrollBarMaximumForTest(), 14 - 5);
+}
+
+void TestLineWrap::softWrapFoldCachePrepend()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display(nullptr);
+    initSoftWrapFoldEnv(emu, win, display, 10);
+
+    // 4 条 25 字符行：历史 {L0,L1} + 屏幕 {L2,L3}，12 个显示行
+    feedAsciiLines(emu, {25, 25, 25, 25});
+    QTest::qWait(50);
+    QCOMPARE(display.vScrollBarMaximumForTest(), 12 - 5);
+
+    // 历史读回注入：头部前插一条 25 字符行（3 段）+ 一条 5 字符行（1 段），
+    // 折叠总数 +4（12 → 16）
+    QVector<Character> longLine(25, Character(U'p'));
+    QVector<Character> shortLine(5, Character(U'q'));
+    const int n = win->screen()->prependHistoryLines({longLine, shortLine},
+                                                     {false, false});
+    QCOMPARE(n, 2);
+    win->notifyOutputChanged();
+    QTest::qWait(50);
+    QCOMPARE(win->screen()->getHistLines(), 4);
+    QCOMPARE(display.vScrollBarMaximumForTest(), 16 - 5);
+}
+
+void TestLineWrap::softWrapFoldCacheClearHistory()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display(nullptr);
+    initSoftWrapFoldEnv(emu, win, display, 4);
+
+    feedAsciiLines(emu, {25, 25, 25, 25, 25, 25});
+    QTest::qWait(50);
+    QCOMPARE(display.vScrollBarMaximumForTest(), 18 - 5);
+
+    // clearHistory：历史整体废弃，缓存归零；屏幕区两条 25 字符行仍在（2×3 = 6 段）
+    emu.clearHistory();
+    win->notifyOutputChanged();
+    QTest::qWait(50);
+    QCOMPARE(win->screen()->getHistLines(), 0);
+    QCOMPARE(display.vScrollBarMaximumForTest(), 6 - 5);
+}
+
+void TestLineWrap::softWrapFoldCacheResize()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display(nullptr);
+    initSoftWrapFoldEnv(emu, win, display, 10);
+
+    feedAsciiLines(emu, {25, 25, 25, 25, 25, 25});
+    QTest::qWait(50);
+    QCOMPARE(display.vScrollBarMaximumForTest(), 18 - 5);
+
+    // 拉宽到 25 列：25 字符行变为单段，折叠缓存须按新列宽全量重建（6×1 = 6）
+    // 夹具未接仿真层尺寸回报，手动触发输出变更驱动 updateImage；
+    // 中途 resize 需要真实 resizeEvent，须先 show（隐藏部件不收几何事件）
+    display.show();
+    display.resize(25 * display.fontWidth() + 2, 5 * display.fontHeight() + 2);
+    win->notifyOutputChanged();
+    QTest::qWait(50);
+    QCOMPARE(display.vScrollBarMaximumForTest(), 6 - 5);
+
+    // 再缩窄到 7 列：25 字符行折 4 段（ceil(25/7)），6×4 = 24
+    display.resize(7 * display.fontWidth() + 2, 5 * display.fontHeight() + 2);
+    win->notifyOutputChanged();
+    QTest::qWait(50);
+    QCOMPARE(display.vScrollBarMaximumForTest(), 24 - 5);
+}
+
+void TestLineWrap::softWrapFoldCacheDragMapping()
+{
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display(nullptr);
+    // 缓冲 5 行 + 显示 3 行：窗口顶可在缓冲行 0..4 间拖动（2 行缓冲夹具窗口恒
+    // 覆盖全缓冲，无法演练拖动映射）
+    initSoftWrapFoldEnv(emu, win, display, 10, 5, 3);
+
+    // 混合折叠数：L0(25→3 段)、L1(5→1) 入历史；屏幕 L2(15→2)、L3(10→1)、
+    // L4(5→1)、L5(12→2)、L6(8→1)。
+    // 显示行前缀：L0 占 0-2，L1 占 3，L2 占 4-5，L3 占 6，L4 占 7，L5 占 8-9，L6 占 10
+    feedAsciiLines(emu, {25, 5, 15, 10, 5, 12, 8});
+    QTest::qWait(50);
+    QCOMPARE(win->screen()->getHistLines(), 2);
+    QCOMPARE(display.vScrollBarMaximumForTest(), 11 - 3);
+    QCOMPARE(display.screenWindow()->currentLine(), 4);   // 贴底：lineCount 7 - windowLines 3
+
+    // 拖动值 → 缓冲行映射：历史区对缓存段数前缀和反推，目标取段起点（往返不动点）
+    display.setVScrollBarValueForTest(3);   // 落 L1 首段（历史区缓存反推）
+    QCOMPARE(display.screenWindow()->currentLine(), 1);
+    display.setVScrollBarValueForTest(4);   // 越过历史区总数 4：屏幕区线性反推落 L2 首段
+    QCOMPARE(display.screenWindow()->currentLine(), 2);
+    display.setVScrollBarValueForTest(6);   // 落 L3 首段
+    QCOMPARE(display.screenWindow()->currentLine(), 3);
+    // 落 L5 首段（缓冲行 5），再被 scrollTo 钳到最大窗口顶 4
+    display.setVScrollBarValueForTest(8);
+    QCOMPARE(display.screenWindow()->currentLine(), 4);
 }
 
 QTEST_MAIN(TestLineWrap)

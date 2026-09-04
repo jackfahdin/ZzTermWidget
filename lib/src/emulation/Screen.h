@@ -813,6 +813,45 @@ public:
      */
     qint64 historyBaseLine() const { return _historyBase; }
 
+    // SoftWrap 历史折叠段数缓存 ----------------
+    /**
+     * @brief 启用/停用历史折叠段数缓存（SoftWrap 滚动条换算的数据源）。
+     * @param enabled true 时按 @p foldColumns 列宽对现有历史全量重建一次；
+     *        false 时销毁缓存（NoWrap 下不付任何维护成本）。
+     * @param foldColumns 折叠列宽（显示层列数，与 Screen::columns 解耦：
+     *        测试夹具等场景两者可不一致）。
+     * @note 已处于目标状态时幂等：重复启用只按 setFoldCountColumns() 处理列宽漂移。
+     *       缓存随 addHistLine/prependHistoryLines 增量更新，setScroll 换型/清空后
+     *       全量重建；前缀和惰性构建，历史突变即失效。
+     */
+    void setFoldCountTracking(bool enabled, int foldColumns);
+    /**
+     * @brief 折叠列宽变化时全量重建缓存；追踪未启用或列宽未变时 no-op。
+     */
+    void setFoldCountColumns(int foldColumns);
+    /** @brief 折叠段数缓存是否已启用。 */
+    bool foldCountTracking() const { return _histFoldTracking; }
+    /**
+     * @brief 历史区折叠段总数（缓存直读 O(1)）；未启用追踪时返回 0。
+     */
+    int historyFoldTotal() const { return _histFoldTotal; }
+    /**
+     * @brief 前 @p histLineCount 条历史行的折叠段数前缀和。
+     * @note 前缀和惰性构建（拖动手势期间历史不变、可复用），历史突变后首次查询重建。
+     */
+    int historyFoldPrefixSum(int histLineCount) const;
+    /**
+     * @brief 折叠段显示行偏移 @p displayRow 落入的历史行号（前缀和二分反推）。
+     * @return 历史行号；偏移越出历史区时返回历史行数（调用方续查屏幕区）。
+     */
+    int historyLineAtFoldOffset(int displayRow) const;
+    /**
+     * @brief 绝对行 @p absoluteLine（历史+屏幕统一编号）的折叠段数。
+     * @note 历史行读缓存；屏幕行现场计算（内容随时变，但行数仅几十行）。
+     *       追踪未启用时按 Screen::columns 现场计算（交替屏等兜底路径）。
+     */
+    int lineFoldCount(int absoluteLine) const;
+
     /**
       * Fills the buffer @p dest with @p count instances of the default (ie. blank)
       * Character style.
@@ -910,6 +949,23 @@ private:
 
     // history buffer ---------------
     HistoryScroll* history;
+
+    // SoftWrap 历史折叠段数缓存 ----------------
+    // 与 history 行平行的折叠段数表 + 总数 + 惰性前缀和；仅 setFoldCountTracking(true)
+    // （SoftWrap 模式）下维护，NoWrap 下为空、不付成本
+    bool _histFoldTracking = false;       ///< 缓存是否启用
+    int _histFoldColumns = 0;             ///< 计算时使用的折叠列宽（显示层列数）
+    QVector<int> _histFoldCounts;         ///< 每历史行折叠段数（与 history 行一一对应）
+    int _histFoldTotal = 0;               ///< _histFoldCounts 之和
+    mutable QVector<int> _histFoldPrefix; ///< 惰性前缀和（size = counts + 1）
+    mutable bool _histFoldPrefixDirty = true;
+
+    /** @brief 有效长度 @p len 的行按 @p cols 列宽折叠的段数（空行计 1 段）。 */
+    static int foldCountForLineLen(int len, int cols);
+    /** @brief 全量重建历史折叠缓存（启用追踪/列宽变化/setScroll 换型后调用）。 */
+    void rebuildHistFoldCounts();
+    /** @brief 惰性前缀和按需重建（已有效时 no-op）。 */
+    void ensureHistFoldPrefix() const;
 
     // cursor location
     int cuX;

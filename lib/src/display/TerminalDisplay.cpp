@@ -148,6 +148,10 @@ ScreenWindow *TerminalDisplay::screenWindow() const { return _screenWindow; }
 void TerminalDisplay::setScreenWindow(ScreenWindow *window) {
     // disconnect existing screen window if any
     if (_screenWindow) {
+        // SoftWrap 折叠缓存挂在旧 Screen 上：换窗前先销毁，避免无人消费仍维护
+        if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap
+            && _screenWindow->screen())
+            _screenWindow->screen()->setFoldCountTracking(false, 0);
         disconnect(_screenWindow, nullptr, this, nullptr);
     }
 
@@ -1444,16 +1448,13 @@ int TerminalDisplay::maxVisibleLineWidth() const {
     return maxLen;
 }
 
-QVector<int> TerminalDisplay::allLineLengths() const {
-    QVector<int> lengths;
-    if (!_screenWindow)
-        return lengths;
+void TerminalDisplay::ensureFoldCountCache() {
     Screen *screen = _screenWindow->screen();
-    const int total = screen->getHistLines() + screen->getLines();
-    lengths.reserve(total);
-    for (int i = 0; i < total; ++i)
-        lengths.append(screen->getLineLength(i));
-    return lengths;
+    if (!screen)
+        return;
+    // 未启用时按当前显示列数懒建（交替屏切换等绕过 setLineWrapMode 的路径）；
+    // 已启用时仅列宽漂移才触发全量重建，每帧开销为两次 int 比较
+    screen->setFoldCountTracking(true, _columns);
 }
 
 bool TerminalDisplay::composeViewImage(Character *dest) {
@@ -1805,16 +1806,31 @@ void TerminalDisplay::updateImage() {
     // 垂直滚动条：SoftWrap 下 range/value 以全缓冲折叠后的显示行计，
     // 其余模式以缓冲行计
     if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap) {
-        const QVector<int> lengths = allLineLengths();
-        int total = 0;
-        for (int len : lengths)
-            total += foldCountForLine(len, _columns);
+        // 历史区段数走 Screen 增量缓存（消除每帧 allLineLengths 全量遍历 +
+        // QVector 堆分配；输出洪泛期历史每帧都变，缓存经 addHistLine 增量维护）；
+        // 屏幕区几十行内容随时变，逐行现场求和（与缓存同一套折叠语义）
+        Screen *screen = _screenWindow->screen();
+        ensureFoldCountCache();
+        const int histLines = screen->getHistLines();
+        const int currentLine = _screenWindow->currentLine();
+        int total = screen->historyFoldTotal();
+        for (int i = histLines; i < histLines + screen->getLines(); ++i)
+            total += screen->lineFoldCount(i);
         // 行宽整除边界的占位段（composeViewImage 本帧补出）也占一个显示行，
         // 总数 +1 避免滚动条 range 少 1
         if (_cursorRowPlaceholder)
             total += 1;
-        setScroll(displayRowOffsetOfLine(lengths, _columns, _screenWindow->currentLine()),
-                  total);
+        // 窗口顶的显示行偏移：落历史区内部用缓存前缀和（拖动手势期间惰性复用）；
+        // 落屏幕区（含贴底，洪泛期热路径）用总数 + 局部和，不建前缀和
+        int cursor;
+        if (currentLine < histLines) {
+            cursor = screen->historyFoldPrefixSum(currentLine);
+        } else {
+            cursor = screen->historyFoldTotal();
+            for (int i = histLines; i < currentLine; ++i)
+                cursor += screen->lineFoldCount(i);
+        }
+        setScroll(cursor, total);
     } else {
         setScroll(_screenWindow->currentLine(), _screenWindow->lineCount());
     }
@@ -3223,15 +3239,24 @@ void TerminalDisplay::scrollBarPositionChanged(int) {
 
     int target = _scrollBar->value();
     if (_lineWrapMode == QTermWidget::LineWrapMode::SoftWrap) {
-        // 滚动条值是显示行：前缀和扫描反推其落在哪个缓冲行的折叠段内
-        const QVector<int> lengths = allLineLengths();
-        int acc = 0;
-        int line = 0;
-        for (; line < lengths.size(); ++line) {
-            const int c = foldCountForLine(lengths[line], _columns);
-            if (target < acc + c)
-                break;
-            acc += c;
+        // 滚动条值是显示行：历史区对缓存段数前缀和二分反推（消除 allLineLengths
+        // 全量遍历与堆分配），屏幕区几十行线性反推
+        Screen *screen = _screenWindow->screen();
+        ensureFoldCountCache();
+        const int histTotal = screen->historyFoldTotal();
+        int line;
+        if (target < histTotal) {
+            line = screen->historyLineAtFoldOffset(target);
+        } else {
+            const int histLines = screen->getHistLines();
+            const int end = histLines + screen->getLines();
+            int acc = histTotal;
+            for (line = histLines; line < end; ++line) {
+                const int c = screen->lineFoldCount(line);
+                if (target < acc + c)
+                    break;
+                acc += c;
+            }
         }
         target = qMin(line, qMax(0, _screenWindow->lineCount() - _screenWindow->windowLines()));
         // 已知简化：窗口顶落在该缓冲行首段，段内精度丢失（v1 接受）
@@ -3314,6 +3339,10 @@ void TerminalDisplay::setScrollBarPosition(
 void TerminalDisplay::setLineWrapMode(QTermWidget::LineWrapMode mode) {
     if (_lineWrapMode == mode)
         return;
+    // 离开 SoftWrap：销毁 Screen 历史折叠缓存，NoWrap 下不付维护成本
+    if (mode != QTermWidget::LineWrapMode::SoftWrap && _screenWindow
+        && _screenWindow->screen())
+        _screenWindow->screen()->setFoldCountTracking(false, 0);
     _lineWrapMode = mode;
     _hScrollOffset = 0;
     _displayRows.clear();

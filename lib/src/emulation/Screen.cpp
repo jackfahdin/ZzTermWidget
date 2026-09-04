@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 
 #include <QDate>
 #include <QTextStream>
@@ -1437,6 +1438,12 @@ void Screen::addHistLine() {
     if (hasScroll()) {
         int oldHistLines = history->getLines();
 
+        // SoftWrap 折叠缓存：入行段数须在下方平行表 move 之前取样
+        //（行长度在该点已知，foldCountForLineLen 为 O(1)）
+        const int newFoldCount = _histFoldTracking
+                ? foldCountForLineLen(screenLines[0].count(), _histFoldColumns)
+                : 0;
+
         history->addCellsVector(screenLines[0]);
         history->addLine(lineProperties[0] & LINE_WRAPPED);
 
@@ -1483,6 +1490,22 @@ void Screen::addHistLine() {
             releaseKittyRefLine(_kittyLines[0]); // 防御：历史容量为零时直接销毁
         }
         _kittyLines[0].clear();
+
+        // SoftWrap 折叠缓存随行数平行维护：未满追加 / 满员在 dropIdx 处弹出被丢行
+        // 再追加（int memmove 可接受），前缀和惰性失效
+        if (_histFoldTracking) {
+            Q_ASSERT(_histFoldCounts.size() == oldHistLines);
+            if (newHistLines > oldHistLines) {
+                _histFoldCounts.push_back(newFoldCount);
+                _histFoldTotal += newFoldCount;
+            } else if (oldHistLines > 0) {
+                _histFoldTotal -= _histFoldCounts[dropIdx];
+                _histFoldCounts.erase(_histFoldCounts.begin() + dropIdx);
+                _histFoldCounts.push_back(newFoldCount);
+                _histFoldTotal += newFoldCount;
+            }
+            _histFoldPrefixDirty = true;
+        }
 
         bool beginIsTL = (selBegin == selTopLeft);
 
@@ -1551,6 +1574,22 @@ int Screen::prependHistoryLines(const QVector<QVector<Character>> &lines,
         _historyLinks.push_front(HyperlinkLine());
         _historyImages.push_front(ImageRefLine());
         _historyKittyRefs.push_front(KittyRefLine());
+    }
+
+    // SoftWrap 折叠缓存同步前插（每批一次 memmove）：
+    // 与 HistoryScrollBuffer::prependLines 同序——容量不足时输入中最老的 skip 行
+    // 未入缓冲，只计实际前插的尾部 n 行
+    if (_histFoldTracking) {
+        const int skip = lines.size() - n;
+        QVector<int> counts(n);
+        for (int i = 0; i < n; i++) {
+            counts[i] = foldCountForLineLen(lines[skip + i].size(), _histFoldColumns);
+            _histFoldTotal += counts[i];
+        }
+        // QList 无整段 insert 重载：新行计数在前拼好后整体替换（每批一次堆搬移）
+        counts += _histFoldCounts;
+        _histFoldCounts = std::move(counts);
+        _histFoldPrefixDirty = true;
     }
 
     // 选区 loc 线性坐标随历史行索引整体上移 n 行
@@ -2068,6 +2107,100 @@ const KittyPlacement *Screen::kittyPlacement(quint32 placementHandle) const
 
 int Screen::getHistLines() const { return history->getLines(); }
 
+// SoftWrap 历史折叠段数缓存 ----------------
+
+int Screen::foldCountForLineLen(int len, int cols) {
+    if (cols <= 0)
+        return 1;   // 退化列宽防御（与 foldCountForLine 同口径）
+    return qMax(1, (len + cols - 1) / cols);
+}
+
+void Screen::setFoldCountTracking(bool enabled, int foldColumns) {
+    if (enabled == _histFoldTracking) {
+        if (enabled)
+            setFoldCountColumns(foldColumns);   // 幂等：列宽漂移自愈
+        return;
+    }
+    _histFoldTracking = enabled;
+    if (enabled) {
+        _histFoldColumns = foldColumns;
+        rebuildHistFoldCounts();
+    } else {
+        _histFoldCounts.clear();
+        _histFoldCounts.squeeze();
+        _histFoldTotal = 0;
+        _histFoldColumns = 0;
+        _histFoldPrefix.clear();
+        _histFoldPrefixDirty = true;
+    }
+}
+
+void Screen::setFoldCountColumns(int foldColumns) {
+    if (!_histFoldTracking || foldColumns == _histFoldColumns)
+        return;
+    _histFoldColumns = foldColumns;
+    rebuildHistFoldCounts();
+}
+
+void Screen::rebuildHistFoldCounts() {
+    _histFoldCounts.clear();
+    _histFoldTotal = 0;
+    if (!_histFoldTracking)
+        return;
+    const int n = history->getLines();
+    _histFoldCounts.reserve(n);
+    for (int i = 0; i < n; i++) {
+        const int count = foldCountForLineLen(history->getLineLen(i), _histFoldColumns);
+        _histFoldCounts.append(count);
+        _histFoldTotal += count;
+    }
+    _histFoldPrefixDirty = true;
+}
+
+void Screen::ensureHistFoldPrefix() const {
+    if (!_histFoldPrefixDirty)
+        return;
+    const int n = _histFoldCounts.size();
+    _histFoldPrefix.resize(n + 1);
+    int acc = 0;
+    for (int i = 0; i < n; i++) {
+        _histFoldPrefix[i] = acc;
+        acc += _histFoldCounts[i];
+    }
+    _histFoldPrefix[n] = acc;
+    _histFoldPrefixDirty = false;
+}
+
+int Screen::historyFoldPrefixSum(int histLineCount) const {
+    ensureHistFoldPrefix();
+    return _histFoldPrefix[qBound(0, histLineCount, (int)_histFoldCounts.size())];
+}
+
+int Screen::historyLineAtFoldOffset(int displayRow) const {
+    if (displayRow < 0)
+        return 0;
+    ensureHistFoldPrefix();
+    // 段数恒 >= 1，前缀和严格递增：首个 prefix[i+1] > displayRow 的 i 即命中行；
+    // 越出历史区（displayRow >= 总数）时返回历史行数
+    const auto it = std::upper_bound(_histFoldPrefix.begin() + 1,
+                                     _histFoldPrefix.end(), displayRow);
+    return int(it - _histFoldPrefix.begin()) - 1;
+}
+
+int Screen::lineFoldCount(int absoluteLine) const {
+    const int histLines = history->getLines();
+    if (absoluteLine < 0 || absoluteLine >= histLines + lines)
+        return 0;   // 防御：与 getLineLength 越界口径一致
+    if (absoluteLine < histLines) {
+        if (_histFoldTracking && absoluteLine < _histFoldCounts.size())
+            return _histFoldCounts[absoluteLine];
+        // 追踪未启用（交替屏等兜底）：按屏幕列宽现场计算
+        return foldCountForLineLen(history->getLineLen(absoluteLine), columns);
+    }
+    const int cols = _histFoldTracking ? _histFoldColumns : columns;
+    return foldCountForLineLen(screenLines[absoluteLine - histLines].count(), cols);
+}
+
 void Screen::setScroll(const HistoryType &t, bool copyPreviousScroll) {
     clearSelection();
 
@@ -2136,6 +2269,10 @@ void Screen::setScroll(const HistoryType &t, bool copyPreviousScroll) {
         _historyBase = 0;        // 历史整体废弃（clearHistory）：绝对行号基线归零
         _hasPrependedLines = false;
     }
+
+    // 历史换型/缩容/整体废弃后行集可能任意变化，折叠缓存全量重建（低频操作）
+    if (_histFoldTracking)
+        rebuildHistFoldCounts();
 }
 
 bool Screen::hasScroll() const { return history->hasScroll(); }
