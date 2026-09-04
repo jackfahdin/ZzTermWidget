@@ -220,11 +220,12 @@ void TestBenchmark::testFullScreenScroll()
 }
 
 /**
- * @brief SoftWrap + 万级历史下持续输出的帧耗时：滚动条折叠总数走 Screen 增量
- *        缓存的回归基线（旧实现每帧 allLineLengths 全量遍历历史+屏幕并堆分配
- *        QVector，万级历史单帧 0.3-0.8ms + 约 400KB 分配 churn）。
+ * @brief SoftWrap + 万级历史下持续输出的 updateImage 帧耗时：滚动条折叠总数走
+ *        Screen 增量缓存的回归基线（旧实现每帧 allLineLengths 全量遍历历史+屏幕
+ *        并堆分配 QVector，万级历史单帧 0.3-0.8ms + 约 400KB 分配 churn）。
  * @note 口径同 testFullScreenScroll（receiveData 产帧 → notifyOutputChanged 驱动
- *       updateImage → 脏区渲染）；不设硬性断言，数字人工对比。
+ *       updateImage），但不含渲染段——渲染耗时（毫秒级）会把目标换算（微秒级）
+ *       淹没在噪声里；不设硬性断言，数字人工对比。
  */
 void TestBenchmark::testSoftWrapLargeHistoryScroll()
 {
@@ -232,19 +233,16 @@ void TestBenchmark::testSoftWrapLargeHistoryScroll()
     ScreenWindow *win = nullptr;
     TerminalDisplay display;
     initDisplayEnv(emu, win, display);
-    emu.setHistory(HistoryTypeBuffer(10000));   // 万级历史（环形满员滚动）
+    emu.setHistory(HistoryTypeBuffer(50000));   // 五万行历史（环形满员滚动）
     display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
     display.updateImage(); // 首帧：几何就位（折叠缓存按显示列数懒建）
     emu.setImageSize(display.lines(), display.columns()); // 对齐三者行列
-    const QByteArray content = buildScrollPayload(0, 10000); // 填满历史并进入滚动态
+    const QByteArray content = buildScrollPayload(0, 50000); // 填满历史并进入滚动态
     emu.receiveData(content.constData(), int(content.size()));
     win->notifyOutputChanged();
     win->screen()->resetScrolledLines();
     win->screen()->resetDroppedLines();
-    QImage image(display.size(), QImage::Format_ARGB32);
-    image.fill(Qt::black);
-    display.render(&image); // warmup
-    int lineNo = 10000;
+    int lineNo = 50000;
     QBENCHMARK {
         const QByteArray out = buildScrollPayload(lineNo, 4);
         lineNo += 4;
@@ -253,7 +251,6 @@ void TestBenchmark::testSoftWrapLargeHistoryScroll()
         // 镜像 Emulation::showBulk() 的消费后复位，保证 scrollCount 为本帧滚动量
         win->screen()->resetScrolledLines();
         win->screen()->resetDroppedLines();
-        display.render(&image, QPoint(), display.lastDirtyRegion());
     }
 }
 
