@@ -53,6 +53,7 @@ private slots:
     void hscrollSelectionHighlight();
     void integrationNoWrapHScroll();
     void integrationSoftWrapAfterShrink();
+    void hscrollOffsetClampOnResize();
 };
 
 void TestLineWrap::screenLineLength()
@@ -508,6 +509,49 @@ void TestLineWrap::integrationSoftWrapAfterShrink()
     QCOMPARE(display.characterAtForTest(0, 1).character, U'k');
     QCOMPARE(display.characterAtForTest(0, 2).character, U'u');
     QVERIFY(!display.hScrollBarVisibleForTest());
+}
+
+void TestLineWrap::hscrollOffsetClampOnResize()
+{
+    Vt102Emulation emu;
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setHistory(HistoryTypeBuffer(100));
+    emu.setImageSize(2, 30);              // 缓冲 2 行 × 30 列：25 字符一行放下
+    ScreenWindow *win = emu.createWindow();
+    TerminalDisplay display(nullptr);
+    display.setVTFont(monospaceFont());
+    display.setBlinkingCursor(false);
+    display.setScreenWindow(win);
+    display.setScrollBarPosition(QTermWidget::NoScrollBar);
+
+    // 显示网格 10 列 × 3 行（横向条吃掉一行后余 2 行，窗口顶不漂）
+    display.resize(10 * display.fontWidth() + 2, 3 * display.fontHeight() + 2);
+    display.show();
+
+    const QByteArray text("abcdefghijklmnopqrstuvwxy");
+    emu.receiveData(text.constData(), static_cast<int>(text.size()));
+    QTest::qWait(50);
+    QVERIFY(display.hScrollBarVisibleForTest());
+    QCOMPARE(display.hScrollBarMaximumForTest(), 15);   // range = 25 - 10
+
+    // Shift+滚轮向下两格：水平视口右移 8 列
+    const QPointF center(display.width() / 2.0, display.height() / 2.0);
+    for (int i = 0; i < 2; ++i) {
+        QWheelEvent wheelDown(center, center, QPoint(0, 0), QPoint(0, -120),
+                              Qt::NoButton, Qt::ShiftModifier,
+                              Qt::NoScrollPhase, false);
+        QApplication::sendEvent(&display, &wheelDown);
+    }
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'i');   // 偏移 8
+
+    // 拉宽窗口到 22 列：range 缩为 25 - 22 = 3（仍 >0，无显隐切换、无新输出）。
+    // 偏移 8 越界须当场钳到 3 且本帧即按钳后偏移重合成——
+    // 回归：合成曾发生在偏移钳制之前，画面滞留在过期大偏移直到下一次输出
+    display.resize(22 * display.fontWidth() + 2, 3 * display.fontHeight() + 2);
+    win->notifyOutputChanged();
+    QTest::qWait(50);
+    QCOMPARE(display.hScrollBarMaximumForTest(), 3);
+    QCOMPARE(display.characterAtForTest(0, 0).character, U'd');   // 偏移钳到 3
 }
 
 QTEST_MAIN(TestLineWrap)

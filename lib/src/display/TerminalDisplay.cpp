@@ -1606,12 +1606,20 @@ void TerminalDisplay::updateImage() {
         updateImageSize();
     }
 
+    // 先算一次可见内容最大有效行宽并把水平偏移钳到当前 range：窗口拉宽使
+    // range 缩小（无显隐切换、无输入、无新输出）时，本帧合成必须用钳后偏移，
+    // 否则钳制只发生在下方滚动条块、合成已用过期大偏移完成，画面滞留在过度
+    // 右移的内容（右侧大片空白）直到下一次输出或按键
+    const int maxVisibleLen = maxVisibleLineWidth();
+    if (_lineWrapMode == QTermWidget::LineWrapMode::NoWrap)
+        _hScrollOffset = qMin(_hScrollOffset, qMax(0, maxVisibleLen - _columns));
+
     // 行显示模式视图合成：SoftWrap 或存在超宽行/水平偏移时，把窗口各行切片
     // 拼成 _lines × _columns 网格作为比对源；否则保留 getImage() 快路径
     Character *composed = nullptr;
     Character *newimg = nullptr;
     if (_lineWrapMode != QTermWidget::LineWrapMode::NoWrap || _hScrollOffset > 0
-        || maxVisibleLineWidth() > _columns) {
+        || maxVisibleLen > _columns) {
         composed = new Character[_lines * _columns];
         if (composeViewImage(composed))
             newimg = composed;
@@ -1648,11 +1656,11 @@ void TerminalDisplay::updateImage() {
 
     // 横向滚动条：仅 NoWrap 模式、存在超宽行时出现
     if (_lineWrapMode == QTermWidget::LineWrapMode::NoWrap && _hScrollBar) {
-        const int range = qMax(0, maxVisibleLineWidth() - _columns);
+        const int range = qMax(0, maxVisibleLen - _columns);
         const bool wasVisible = _hScrollBar->isVisible();
-        // 先钳偏移再调范围：range 缩小时 setRange 内部会先把 value 钳到新
-        // 上界并发出 valueChanged；此时 _hScrollOffset 已同步为新值，
-        // lambda 比对相等后早退，不会在本段中途重入 updateImage
+        // 偏移已在函数顶部钳到 range（防御性保留此钳制）；
+        // setRange 内部把 value 钳到新上界并发出 valueChanged 时，
+        // lambda 比对 _hScrollOffset 相等后早退，不会在本段中途重入 updateImage
         if (_hScrollOffset > range)
             _hScrollOffset = range;
         _hScrollBar->setRange(0, range);
