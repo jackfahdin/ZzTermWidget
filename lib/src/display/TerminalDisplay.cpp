@@ -3123,7 +3123,20 @@ void TerminalDisplay::setLineWrapMode(QTermWidget::LineWrapMode mode) {
     _lineWrapMode = mode;
     _hScrollOffset = 0;
     _displayRows.clear();
+    // 软折叠模式下横向条恒隐藏：先隐藏再算几何，propagateSize 才能按
+    // 完整内容高度得出行数（calcGeometry 依据条当前可见性扣高）
+    if (mode == QTermWidget::LineWrapMode::SoftWrap && _hScrollBar)
+        _hScrollBar->hide();
     propagateSize();   // 重算几何并通知仿真层
+    // 立即按新模式重建 _image：几何不变时 propagateSize 不发尺寸信号，
+    // 否则无新输出期间视图会一直停留在旧模式的合成内容。
+    // 仅在 _image 已存在时重建：为空说明首帧尚未合成，此刻重建会按当前
+    // （可能尚未布局的）几何固化 _lines/_columns——隐藏部件的 resizeEvent
+    // 要等 show 才投递，后续 resize 无法修正；留空则由首帧 updateImage
+    // 惰性建图，几何按彼时尺寸计算（updateImage 开头已判空 _screenWindow，
+    // 未接会话时安全早退）
+    if (_image)
+        updateImage();
     update();
 }
 

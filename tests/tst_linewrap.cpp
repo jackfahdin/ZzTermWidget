@@ -459,19 +459,17 @@ void TestLineWrap::integrationNoWrapHScroll()
     QApplication::sendEvent(&display, &wheelDown);
     QCOMPARE(display.characterAtForTest(0, 0).character, U'e');
 
-    // 切到 SoftWrap：横向条隐藏，25 字符行折叠为 3 个显示段
-    // （条隐藏当帧重算网格，末段留给下一帧合成，这里只断言已稳定的前两段）
+    // 切到 SoftWrap：横向条隐藏，25 字符行折叠为 3 个显示段。
+    // setLineWrapMode 先隐藏横向条、重算几何并立即重建视图，
+    // 无新输出、无手动驱动时三个折叠段也当场全部可见（回归：曾缺失末段）
     display.setLineWrapMode(QTermWidget::LineWrapMode::SoftWrap);
-    win->notifyOutputChanged();
-    QTest::qWait(50);
     QVERIFY(!display.hScrollBarVisibleForTest());
     QCOMPARE(display.characterAtForTest(0, 0).character, U'a');
     QCOMPARE(display.characterAtForTest(0, 1).character, U'k');
+    QCOMPARE(display.characterAtForTest(0, 2).character, U'u');
 
-    // 切回 NoWrap：模式切换把水平偏移拉回 0，横向条随超宽行重新出现
+    // 切回 NoWrap：模式切换把水平偏移拉回 0，横向条随超宽行同步重新出现
     display.setLineWrapMode(QTermWidget::LineWrapMode::NoWrap);
-    win->notifyOutputChanged();
-    QTest::qWait(50);
     QVERIFY(display.hScrollBarVisibleForTest());
     QCOMPARE(display.characterAtForTest(0, 0).character, U'a');
 }
