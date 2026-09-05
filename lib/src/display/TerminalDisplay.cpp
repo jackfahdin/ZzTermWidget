@@ -257,8 +257,6 @@ void TerminalDisplay::fontChange(const QFont &) {
         }
     }
 
-    _fixedFont_original = _fixedFont;
-
     if (_fontWidth < 1)
         _fontWidth = 1;
 
@@ -1107,6 +1105,15 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
             // This still allows RTL characters to be rendered in the RTL way.
             painter.setLayoutDirection(Qt::LeftToRight);
 
+            // 比例字体：片段已逐格拆分（单格；宽字符片段为双格），字形可能
+            // 宽于格子——裁剪到片段矩形，越界部分不绘制、不留陈旧墨迹。
+            // 等宽字体字形度量与格子一致，保持无裁剪现状（像素等价保障）。
+            const bool clipToCell = !_fixedFont;
+            if (clipToCell) {
+                painter.save();
+                painter.setClipRect(rect, Qt::IntersectClip);
+            }
+
             if (_bidiEnabled) {
                 if (tooWide) {
                     QRect drawRect(rect.topLeft(), rect.size());
@@ -1123,6 +1130,9 @@ void TerminalDisplay::drawCharacters(QPainter &painter, const QRect &rect,
                 drawRect.setHeight(rect.height() + _drawTextAdditionHeight);
                 painter.drawText(drawRect, Qt::AlignBottom, LTR_OVERRIDE_CHAR + QString::fromStdU32String(text));
             }
+
+            if (clipToCell)
+                painter.restore();
         }
     }
 
@@ -2564,34 +2574,15 @@ void TerminalDisplay::paintFilters(QPainter &painter) {
     }
 }
 
-// NOTE: This should be called only when "_fixedFont" is set to "false" (temporarily).
-int TerminalDisplay::textWidth(const int startColumn, const int length, const int line) const {
-    QFontMetrics fm(font());
-    int result = 0;
-    for (int column = 0; column < length; column++) {
-        auto c = _image[loc(startColumn + column, line)];
-        // Take care of double-column characters and those with small widths.
-        // Exclude line characters, as some of them are ambiguous ('A') [1]
-        // [1] http://www.unicode.org/Public/UCD/latest/ucd/EastAsianWidth.txt
-        if (_fixedFont_original && !isLineChar(c)) { 
-            // c == 0 may happen here after a double-column character
-            result += fm.horizontalAdvance(QLatin1Char(REPCHAR[0]));
-        } else {
-            result += fm.horizontalAdvance(QChar(static_cast<uint>(c.character)));
-        }
-    }
-    return result;
-}
-
 QRect TerminalDisplay::calculateTextArea(int topLeftX, int topLeftY,
                                             int startColumn, int line,
                                             int length,
                                             const QTransform &textScale) {
-    const int left =
-            _fixedFont ? _fontWidth * startColumn : textWidth(0, startColumn, line);
+    // 永远网格定位：比例字体同样每字符一格（逐格片段 + 单格裁剪，
+    // 见 drawContents/drawCharacters），不存在比例累积偏移
+    const int left = _fontWidth * startColumn;
     const int top = _fontHeight * line;
-    const int width =
-            _fixedFont ? _fontWidth * length : textWidth(startColumn, length, line);
+    const int width = _fontWidth * length;
     // 逆映射一致化（DECDH 根治）：行顶 top 并入逆映射点，scale(1,2) 下墨迹落在
     // 该行自身行带（旧实现只逆映射原点，top 未经逆映射，墨迹落在 2× 行坐标处，
     // 行矩形脏区盖不住、增量重绘必留残影）。横向 left 保持不逆映射：DECDWL 下
@@ -2879,7 +2870,12 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             char32_t nxtC = 0;
             bool nxtDoubleWidth = false;
             int nxtCharWidth = 0;
-            while (x + len <= rlx &&
+            // 比例字体（_fixedFont == false）不合并片段：每列独立成片段，
+            // 逐格绘制在格子左边界并由 drawCharacters 裁剪到格子（网格化渲染）；
+            // 等宽字体保持原有合并（连字整形依赖整段绘制，逐字绘制会破坏连字）。
+            // 代价是逐格拆分同时放弃 bidi 跨字整形（阿语等上下文形变）：
+            // 终端网格语义与整形天然冲突，与 xterm/Konsole 一致，有意接受
+            while (_fixedFont && x + len <= rlx &&
                         _image[loc(x + len, y)].foregroundColor == currentForeground &&
                         _image[loc(x + len, y)].backgroundColor == currentBackground &&
                         _image[loc(x + len, y)].underlineColor == currentUnderlineColor &&
@@ -2920,9 +2916,6 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             if ((x + len < _usedColumns) && (!_image[loc(x + len, y)].character))
                 len++; // Adjust for trailing part of multi-column character
 
-            bool save__fixedFont = _fixedFont;
-            if (lineDraw)
-                _fixedFont = false;
             unistr.resize(p);
 
             // Create a text scaling matrix for double width and double height lines.
@@ -2952,8 +2945,6 @@ void TerminalDisplay::drawContents(QPainter &paint, const QRect &rect) {
             const QPoint buf = mapDisplayToBuffer(x, y);
             drawTextFragment(paint, textArea, unistr, &_image[loc(x, y)], tooWide,
                              _screenWindow->isSelected(buf.x(), buf.y()));
-
-            _fixedFont = save__fixedFont;
 
             // reset back to single-width, single-height _lines
             if (hasTextScale)
@@ -3040,7 +3031,12 @@ void TerminalDisplay::drawContentsLegacy(QPainter &paint, const QRect &rect) {
             char32_t nxtC = 0;
             bool nxtDoubleWidth = false;
             int nxtCharWidth = 0;
-            while (x + len <= rlx &&
+            // 比例字体（_fixedFont == false）不合并片段：每列独立成片段，
+            // 逐格绘制在格子左边界并由 drawCharacters 裁剪到格子（网格化渲染）；
+            // 等宽字体保持原有合并（连字整形依赖整段绘制，逐字绘制会破坏连字）。
+            // 代价是逐格拆分同时放弃 bidi 跨字整形（阿语等上下文形变）：
+            // 终端网格语义与整形天然冲突，与 xterm/Konsole 一致，有意接受
+            while (_fixedFont && x + len <= rlx &&
                         _image[loc(x + len, y)].foregroundColor == currentForeground &&
                         _image[loc(x + len, y)].backgroundColor == currentBackground &&
                         _image[loc(x + len, y)].underlineColor == currentUnderlineColor &&
@@ -3081,9 +3077,6 @@ void TerminalDisplay::drawContentsLegacy(QPainter &paint, const QRect &rect) {
             if ((x + len < _usedColumns) && (!_image[loc(x + len, y)].character))
                 len++; // Adjust for trailing part of multi-column character
 
-            bool save__fixedFont = _fixedFont;
-            if (lineDraw)
-                _fixedFont = false;
             unistr.resize(p);
 
             // Create a text scaling matrix for double width and double height lines.
@@ -3110,8 +3103,6 @@ void TerminalDisplay::drawContentsLegacy(QPainter &paint, const QRect &rect) {
             const QPoint buf = mapDisplayToBuffer(x, y);
             drawTextFragment(paint, textArea, unistr, &_image[loc(x, y)], tooWide,
                              _screenWindow->isSelected(buf.x(), buf.y()));
-
-            _fixedFont = save__fixedFont;
 
             // reset back to single-width, single-height _lines
             paint.setWorldTransform(textScale.inverted(), true);
@@ -3830,15 +3821,9 @@ void TerminalDisplay::getCharacterPosition(const QPointF &widgetPoint,
     if (line >= _usedLines)
         line = _usedLines - 1;
 
-    int x =
+    const int x =
             widgetPoint.x() + _fontWidth / 2 - contentsRect().left() - _leftMargin;
-    if (_fixedFont)
-        column = x / _fontWidth;
-    else {
-        column = 0;
-        while (column + 1 < _usedColumns && x > textWidth(0, column + 1, line))
-            column++;
-    }
+    column = x / _fontWidth;
 
     if (column < 0)
         column = 0;

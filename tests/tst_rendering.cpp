@@ -40,6 +40,10 @@ private slots:
     void testLigatureDirtyRegion();
     void testDoubleHeightInkGeometry();
     void testDoubleHeightPixelEquivalence();
+    void testProportionalFontNarrowCharsGrid();
+    void testProportionalFontWideCharsClippedAtGridRightEdge();
+    void testProportionalFontMouseGridMapping();
+    void testProportionalFontCjkDoubleCell();
 };
 
 /**
@@ -65,6 +69,77 @@ static QFont monospaceFont()
         if (db.isFixedPitch(name))
             return QFont(name);
     return QFontDatabase::systemFont(QFontDatabase::FixedFont);
+}
+
+/**
+ * @brief 选一个真实存在的比例字体（非等宽），用于网格化渲染测试。
+ * @return 优先 DejaVu Sans/Liberation Sans/Arial/Segoe UI，再退任意非
+ *         fixedPitch 族；找不到时返回 family 为空的 QFont（调用方须 QSKIP）。
+ */
+static QFont proportionalFont()
+{
+    static const QStringList preferred = {
+        QStringLiteral("DejaVu Sans"), QStringLiteral("Liberation Sans"),
+        QStringLiteral("Arial"),       QStringLiteral("Segoe UI"),
+    };
+    QFontDatabase db;
+    const QStringList available = db.families();
+    for (const QString &name : preferred)
+        if (available.contains(name) && !db.isFixedPitch(name))
+            return QFont(name);
+    for (const QString &name : available)
+        if (!db.isFixedPitch(name))
+            return QFont(name);
+    return {};
+}
+
+/**
+ * @brief 与 initRenderEnv 相同，但使用指定字体（比例字体网格测试用）。
+ * @note 显式置黑底白字：默认配色底色为浅灰 (178,178,178)，会令
+ *       inkPixels 的「>32 即墨迹」阈值把背景全部误判为墨迹。
+ */
+static void initRenderEnvWithFont(const QFont &font, Vt102Emulation &emu,
+                                  ScreenWindow *&win, TerminalDisplay &display)
+{
+    emu.setCodec(QStringEncoder(QStringConverter::Utf8));
+    emu.setImageSize(24, 80);
+    win = emu.createWindow();
+    win->setWindowLines(24);
+    display.setVTFont(font);
+    display.setBackgroundColor(Qt::black);
+    display.setForegroundColor(Qt::white);
+    display.setBlinkingCursor(false);
+    display.setBlinkingTextEnabled(false);
+    display.setScreenWindow(win);
+    display.resize(800, 600);
+}
+
+/**
+ * @brief 统计图像指定矩形内的墨迹（非背景）像素数。
+ * @note 渲染底色为纯黑（initRenderEnvWithFont 显式设置），前景为白色，
+ *       阈值 32 避开抗锯齿边缘噪声。
+ */
+static int inkPixels(const QImage &img, const QRect &rect)
+{
+    int count = 0;
+    const QRect r = rect.intersected(img.rect());
+    for (int y = r.top(); y <= r.bottom(); y++)
+        for (int x = r.left(); x <= r.right(); x++) {
+            const QRgb px = img.pixel(x, y);
+            if (qRed(px) > 32 || qGreen(px) > 32 || qBlue(px) > 32)
+                count++;
+        }
+    return count;
+}
+
+/**
+ * @brief 显示网格某格的像素矩形（左边距 1px 基线，与既有用例点击坐标同式）。
+ */
+static QRect cellRect(TerminalDisplay &display, int column, int line)
+{
+    return QRect(1 + column * display.fontWidth(),
+                 1 + line * display.fontHeight(),
+                 display.fontWidth(), display.fontHeight());
 }
 
 /**
@@ -1326,6 +1401,135 @@ void TestRendering::testLigatureDirtyRegion()
     const QImage incremental = replayDirtyRegion(display, base);
     const QImage full = renderFull(display);
     verifyStructuralEqual(incremental, full, "ligature-dirty");
+}
+
+/**
+ * @brief 比例字体下窄字符行按网格逐格排布：每个格子的左边界绘制一个 'l'。
+ * @note 回归：旧比例排版按字形 advance 密排，80 个 'l' 实际只排到行宽约 1/3 处，
+ *       中后段格子无墨迹（「没到右边界就换行、右侧留死区」的渲染侧根因）。
+ *       顺带断言批次聚合与 Legacy 两路径在比例字体下仍逐像素相等。
+ */
+void TestRendering::testProportionalFontNarrowCharsGrid()
+{
+    const QFont font = proportionalFont();
+    if (font.family().isEmpty())
+        QSKIP("测试环境无比例字体，跳过");
+
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initRenderEnvWithFont(font, emu, win, display);
+
+    const QByteArray content = "\033[?25l\033[H" + QByteArray(80, 'l');
+    emu.receiveData(content.constData(), int(content.size()));
+    pumpFrame(win);
+    pumpFrame(win);
+    renderFull(display); // warmup：吃掉 _drawTextTestFlag 一次性度量
+
+    const QImage batched = renderDisplay(display, true);
+    const QImage legacy = renderDisplay(display, false);
+    QCOMPARE(legacy, batched);
+
+    // 首格、中间格、末格都应有墨迹（逐格左对齐绘制的直接证据）
+    QVERIFY(inkPixels(batched, cellRect(display, 0, 0)) > 0);
+    QVERIFY(inkPixels(batched, cellRect(display, 40, 0)) > 0);
+    QVERIFY(inkPixels(batched, cellRect(display, 79, 0)) > 0);
+}
+
+/**
+ * @brief 比例字体下宽字形行铺满网格且右缘被裁剪：网格右缘之外不得有墨迹。
+ * @note 回归：旧比例排版下 80 个 'W' 的累积 advance 远超网格宽度，
+ *       越界墨迹直接画到网格右缘之外（仅靠部件边界裁剪）。
+ */
+void TestRendering::testProportionalFontWideCharsClippedAtGridRightEdge()
+{
+    const QFont font = proportionalFont();
+    if (font.family().isEmpty())
+        QSKIP("测试环境无比例字体，跳过");
+
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initRenderEnvWithFont(font, emu, win, display);
+
+    const QByteArray content = "\033[?25l\033[H" + QByteArray(80, 'W');
+    emu.receiveData(content.constData(), int(content.size()));
+    pumpFrame(win);
+    pumpFrame(win);
+    renderFull(display); // warmup
+    const QImage img = renderDisplay(display, true);
+
+    // 末格有墨迹（铺满），网格右缘之外无墨迹（裁剪到格子）
+    QVERIFY(inkPixels(img, cellRect(display, 79, 0)) > 0);
+    const int gridRight = 1 + 80 * display.fontWidth();
+    const QRect beyond(gridRight, 0,
+                       qMax(0, display.width() - gridRight), display.fontHeight() + 2);
+    QCOMPARE(inkPixels(img, beyond), 0);
+}
+
+/**
+ * @brief 比例字体下鼠标点击坐标按网格反查列号。
+ * @note 回归：旧实现按 textWidth 逐字累加反查，窄字符行的像素位置映射到
+ *       远大于实际网格列的列号。上报行列 1 基（同 tst_linewrap 既有用例）。
+ */
+void TestRendering::testProportionalFontMouseGridMapping()
+{
+    const QFont font = proportionalFont();
+    if (font.family().isEmpty())
+        QSKIP("测试环境无比例字体，跳过");
+
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initRenderEnvWithFont(font, emu, win, display);
+
+    const QByteArray content = "\033[?25l\033[H" + QByteArray(80, 'l');
+    emu.receiveData(content.constData(), int(content.size()));
+    pumpFrame(win);
+    pumpFrame(win);
+
+    display.setUsesMouse(false);   // 鼠标事件上报给终端程序（而非选区）
+    QSignalSpy spy(&display, &TerminalDisplay::mouseSignal);
+
+    // 点击显示行 0 第 40 格（0 起）：cx 应报 41、cy 应报 1
+    QTest::mouseClick(&display, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(1 + 40 * display.fontWidth(), 1));
+    QVERIFY(spy.size() >= 1);
+    QCOMPARE(spy.at(0).at(1).toInt(), 41);
+    QCOMPARE(spy.at(0).at(2).toInt(), 1);
+}
+
+/**
+ * @brief 比例字体下 CJK 宽字符仍占两格，其后字符按网格续排。
+ * @note 结构断言（后继格 character == 0）与字体度量无关；
+ *       像素断言用「中 + 70 个 'l'」把网格/比例两种排版的落点差拉到最大。
+ */
+void TestRendering::testProportionalFontCjkDoubleCell()
+{
+    const QFont font = proportionalFont();
+    if (font.family().isEmpty())
+        QSKIP("测试环境无比例字体，跳过");
+
+    Vt102Emulation emu;
+    ScreenWindow *win = nullptr;
+    TerminalDisplay display;
+    initRenderEnvWithFont(font, emu, win, display);
+
+    QByteArray content = "\033[?25l\033[H";
+    content += "中";
+    content += QByteArray(70, 'l');
+    emu.receiveData(content.constData(), int(content.size()));
+    pumpFrame(win);
+    pumpFrame(win);
+    renderFull(display); // warmup
+    const QImage img = renderDisplay(display, true);
+
+    // 结构断言：中 占格 0-1（格 1 为宽字符后继占位格）
+    QCOMPARE(display.characterAtForTest(0, 0).character, char32_t(U'中'));
+    QCOMPARE(display.characterAtForTest(1, 0).character, char32_t(0));
+    // 网格断言：'l' 从格 2 起逐格续排，第 71 格（最后一个 'l'）有墨迹；
+    // 旧比例排版下整行墨迹在约 1/3 行宽处就结束了
+    QVERIFY(inkPixels(img, cellRect(display, 71, 0)) > 0);
 }
 
 QTEST_MAIN(TestRendering)
