@@ -12,6 +12,7 @@ set(QTERMWIDGET_TESTS
     tst_sixel
     tst_kittygraphics
     tst_linewrap
+    tst_minimumsize
 )
 
 foreach(test_name IN LISTS QTERMWIDGET_TESTS)

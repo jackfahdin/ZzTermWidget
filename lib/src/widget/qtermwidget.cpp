@@ -113,6 +113,8 @@ QTermWidget::QTermWidget(QWidget *msgParent, QWidget *parent)
     // sixel 图像锚定需要真实单元格像素尺寸：字体度量变化时同步给仿真层，并立即同步一次初值
     connect(m_terminalDisplay, &TerminalDisplay::changedFontMetricSignal, this, [this](int height, int width){
         m_emulation->setCellPixelSize(width, height);
+        if (!m_terminalDisplay->minimumSize().isNull())
+            setMinimumSize(m_layout->minimumSize()); // 字体变化后同步最小终端网格对应的像素最小尺寸
     });
     m_emulation->setCellPixelSize(m_terminalDisplay->cellPixelWidth(), m_terminalDisplay->cellPixelHeight());
     m_terminalDisplay->setScreenWindow(m_emulation->createWindow());
@@ -489,6 +491,16 @@ void QTermWidget::setScrollBarPosition(ScrollBarPosition pos) {
 
 void QTermWidget::setLineWrapMode(LineWrapMode mode) {
     m_terminalDisplay->setLineWrapMode(mode);
+}
+
+void QTermWidget::setMinimumTerminalSize(int columns, int lines) {
+    m_terminalDisplay->setMinimumTerminalSize(columns, lines);
+    if (columns < 1 && lines < 1) {
+        setMinimumSize(QSize(0, 0));
+        return;
+    }
+    // 布局最小尺寸随子控件联动；显式同步为属性，保证分屏器/主窗口约束链可靠生效
+    setMinimumSize(m_layout->minimumSize());
 }
 
 QTermWidget::LineWrapMode QTermWidget::lineWrapMode() const {

@@ -287,6 +287,16 @@ public:
     void setSize(int cols, int lins);
     void setFixedSize(int cols, int lins);
 
+    /**
+     * @brief 设置终端网格的最小行列数（像素最小尺寸随字体度量联动）。
+     * @param columns 最小列数；小于 1 表示不限制。
+     * @param lines 最小行数；小于 1 表示不限制。
+     * @note 通过 QWidget::minimumSize 强制：布局/分屏器不会把显示区压到
+     *       该网格以下，避免极端小尺寸下 shell 重绘模型退化（折行块高于
+     *       屏幕时 readline/conpty 的重绘流必然产生残迹，属协议层无解）。
+     */
+    void setMinimumTerminalSize(int columns, int lines);
+
     // reimplemented
     QSize sizeHint() const override;
 
@@ -936,6 +946,8 @@ private:
 
     void calcGeometry();
     void propagateSize();
+    /** @brief 按当前字体度量与滚动条状态重算并应用像素最小尺寸。 */
+    void updateMinimumPixelSize();
     void updateImageSize();
     void makeImage();
 
@@ -1096,6 +1108,10 @@ private:
 
     int _contentHeight;
     int _contentWidth;
+
+    int _minColumns = 0;    ///< 最小网格列数（小于 1 = 不限制）
+    int _minLines = 0;      ///< 最小网格行数（小于 1 = 不限制）
+
     Character* _image; // [lines][columns]
                // only the area [usedLines][usedColumns] in the image contains valid data
 

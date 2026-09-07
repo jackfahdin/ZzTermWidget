@@ -166,6 +166,16 @@ public:
     /** @brief 返回当前行显示模式。 */
     LineWrapMode lineWrapMode() const;
 
+    /**
+     * @brief 设置终端网格的最小行列数。
+     * @param columns 最小列数；小于 1 表示不限制（默认不限制）。
+     * @param lines 最小行数；小于 1 表示不限制（默认不限制）。
+     * @note 通过控件像素最小尺寸强制：布局/分屏器不会把终端压到该网格
+     *       以下，避免极端小尺寸下 shell 重绘模型退化产生显示残迹
+     *       （如宽度小于提示符长度、折行块高于屏幕的场景）。
+     */
+    void setMinimumTerminalSize(int columns, int lines);
+
     // Wrapped, scroll to end.
     void scrollToEnd();
 

@@ -262,8 +262,9 @@ void TerminalDisplay::fontChange(const QFont &) {
 
     _fontAscent = fm.ascent();
 
-    emit changedFontMetricSignal(_fontHeight, _fontWidth);
     propagateSize();
+    updateMinimumPixelSize(); // 字体度量变化后最小像素尺寸同步刷新（须在信号前完成）
+    emit changedFontMetricSignal(_fontHeight, _fontWidth);
 
     // We will run paint event testing procedure.
     // Although this operation will destroy the original content,
@@ -1858,8 +1859,10 @@ void TerminalDisplay::updateImage() {
         if (_hScrollBar->value() != _hScrollOffset)
             _hScrollBar->setValue(_hScrollOffset);   // 同上：已同步，lambda 早退
         _hScrollBar->setVisible(range > 0);
-        if (wasVisible != _hScrollBar->isVisible())
+        if (wasVisible != _hScrollBar->isVisible()) {
             updateImageSize();   // 显隐切换改变可用高度，重算几何
+            updateMinimumPixelSize(); // 最小像素尺寸含横滚条高度，同步刷新
+        }
     } else if (_hScrollBar) {
         _hScrollBar->hide();
     }
@@ -4810,6 +4813,33 @@ void TerminalDisplay::setFixedSize(int cols, int lins) {
 }
 
 QSize TerminalDisplay::sizeHint() const { return _size; }
+
+void TerminalDisplay::setMinimumTerminalSize(int columns, int lines) {
+    _minColumns = qMax(0, columns);
+    _minLines = qMax(0, lines);
+    updateMinimumPixelSize();
+}
+
+void TerminalDisplay::updateMinimumPixelSize() {
+    if (_minColumns < 1 && _minLines < 1) {
+        setMinimumSize(QSize(0, 0));
+        return;
+    }
+    // 与 setSize()/calcGeometry() 保持同一套像素公式，
+    // 使网格下界 = 像素下界，pty 永远拿不到退化尺寸
+    const int scrollBarWidth =
+            (_scrollBar->isHidden() ||
+             _scrollBar->style()->styleHint(QStyle::SH_ScrollBar_Transient, nullptr, _scrollBar))
+                    ? 0
+                    : _scrollBar->sizeHint().width();
+    const int hScrollBarHeight =
+            (_hScrollBar && _hScrollBar->isVisible())
+                    ? _hScrollBar->sizeHint().height()
+                    : 0;
+    const int w = 2 * _leftBaseMargin + scrollBarWidth + qMax(1, _minColumns) * _fontWidth;
+    const int h = 2 * _topBaseMargin + hScrollBarHeight + qMax(1, _minLines) * _fontHeight;
+    setMinimumSize(QSize(w, h));
+}
 
 void TerminalDisplay::dragEnterEvent(QDragEnterEvent *event) {
     if (event->mimeData()->hasFormat(QLatin1String("text/plain")))
