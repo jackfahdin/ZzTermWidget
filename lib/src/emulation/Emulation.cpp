@@ -36,6 +36,7 @@
 #include "Screen.h"
 #include "ScreenWindow.h"
 #include "TerminalCharacterDecoder.h"
+#include "../util/StreamDebugLog.h"
 
 Emulation::Emulation()
     : _currentScreen(nullptr)
@@ -301,6 +302,13 @@ void Emulation::setImageSize(int lines, int columns) {
 
     if (newSize == screenSize[0] && newSize == screenSize[1])
         return;
+
+    if (StreamDebugLog::logFile()) {
+        StreamDebugLog::writeLine(QStringLiteral("SIZE lines=%1 cols=%2 (was %3x%4/%5x%6)")
+            .arg(lines).arg(columns)
+            .arg(_screen[0]->getLines()).arg(_screen[0]->getColumns())
+            .arg(_screen[1]->getLines()).arg(_screen[1]->getColumns()));
+    }
 
     _screen[0]->resizeImage(lines, columns);
     _screen[1]->resizeImage(lines, columns);

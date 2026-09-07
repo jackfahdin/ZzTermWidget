@@ -37,6 +37,7 @@
 #include "ColorScheme.h"
 #include "SearchBar.h"
 #include "qtermwidget.h"
+#include "../util/StreamDebugLog.h"
 
 #define QTERMW_HLIGHT "qtermw_hlight"
 
@@ -773,6 +774,9 @@ QList<QAction*> QTermWidget::filterActions(const QPoint& position) {
 }
 
 int QTermWidget::recvData(const char *buff, int len) const {
+    if (StreamDebugLog::logFile()) {
+        StreamDebugLog::writeLine(QStringLiteral("RECV %1 %2").arg(len).arg(StreamDebugLog::escape(buff, len)));
+    }
     m_emulation->receiveData( buff, len );
     return len;
 }

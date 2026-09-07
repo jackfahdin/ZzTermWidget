@@ -33,6 +33,7 @@
 
 #include "CharWidth.h"
 #include "TerminalCharacterDecoder.h"
+#include "../util/StreamDebugLog.h"
 
 // Macro to convert x,y position on screen to position within an image.
 //
@@ -915,7 +916,11 @@ void Screen::setCursorY(int y) {
     if (y == 0)
         y = 1; // Default
     y -= 1;  // Adjust
-    cuY = qMax(0, qMin(lines - 1, y + (getMode(MODE_Origin) ? _topMargin : 0)));
+    const int effective = y + (getMode(MODE_Origin) ? _topMargin : 0);
+    if (StreamDebugLog::logFile() && effective > lines - 1) {
+        StreamDebugLog::writeLine(QStringLiteral("CUP-CLAMP row=%1 lines=%2").arg(y + 1).arg(lines));
+    }
+    cuY = qMax(0, qMin(lines - 1, effective));
 }
 
 void Screen::home() {
